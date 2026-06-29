@@ -26,6 +26,13 @@ _LAZY = {
     "MFTFineTuner": (".mft", "MFTFineTuner"),
     "DPAPredictor": (".predictor", "DPAPredictor"),
     "DPATrainer": (".trainer", "DPATrainer"),
+    # Polymer recipe support
+    "generate_monomer_systems": (".data", "generate_monomer_systems"),
+    "assemble_recipe_json": (".data", "assemble_recipe_json"),
+    "polymer_fingerprint_to_npy": (".data", "polymer_fingerprint_to_npy"),
+    "PolymerConvertResult": (".data", "PolymerConvertResult"),
+    "RecipeDataset": (".data", "RecipeDataset"),
+    "RecipeAggregator": (".data", "RecipeAggregator"),
 }
 
 __all__ = list(_LAZY)

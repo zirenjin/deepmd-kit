@@ -24,6 +24,13 @@ _LAZY = {
     "smiles_to_npy": (".smiles", "smiles_to_npy"),
     "predict_records_from_data": (".smiles", "predict_records_from_data"),
     "records_from_direct_data": (".smiles", "records_from_direct_data"),
+    # Polymer recipe support
+    "generate_monomer_systems": (".polymer", "generate_monomer_systems"),
+    "assemble_recipe_json": (".polymer", "assemble_recipe_json"),
+    "polymer_fingerprint_to_npy": (".polymer", "polymer_fingerprint_to_npy"),
+    "PolymerConvertResult": (".polymer", "PolymerConvertResult"),
+    "RecipeDataset": (".recipe_dataset", "RecipeDataset"),
+    "RecipeAggregator": (".recipe_aggregator", "RecipeAggregator"),
 }
 
 __all__ = list(_LAZY)

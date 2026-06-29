@@ -138,6 +138,34 @@ def convert(
     Returns a dict with ``"method"`` and additional metadata from the chosen
     backend.
     """
+    # --- polymer recipe (must be checked before the generic SMILES sniff) ---
+    if isinstance(fmt, str) and fmt.lower() == "polymer_fingerprint":
+        from dpa_adapt.data.polymer import (
+            polymer_fingerprint_to_npy,
+        )
+
+        result = polymer_fingerprint_to_npy(
+            csv_path=input_path,
+            output_dir=output_dir,
+            property_name=property_name,
+            seed=seed,
+            overwrite=overwrite,
+        )
+        if verbose:
+            _LOG.info(
+                "Polymer recipe conversion: %d unique SMILES → %d recipes written.",
+                result.n_unique_smiles,
+                result.n_recipes,
+            )
+        return {
+            "method": "polymer_fingerprint",
+            "recipe_path": str(result.recipe_path),
+            "systems_dir": str(result.systems_dir),
+            "n_unique_smiles": result.n_unique_smiles,
+            "n_recipes": result.n_recipes,
+            "failed_smiles": result.failed_smiles,
+        }
+
     # --- explicit SMILES hint, or auto-sniff ---
     is_smiles_fmt = isinstance(fmt, str) and fmt.lower() == "smiles"
     if is_smiles_fmt or (fmt is None and _is_smiles_input(input_path)):

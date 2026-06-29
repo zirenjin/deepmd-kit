@@ -52,6 +52,19 @@ _LOG = logging.getLogger("dpa_adapt")
 # ---------------------------------------------------------------------------
 
 
+def _is_recipe_dir(path: str | list) -> bool:
+    """Return True when *path* is a single directory that contains recipe.json.
+
+    Used by :meth:`DPAFineTuner.fit` to auto-detect polymer RecipeDataset
+    inputs and route them to the descriptor-level recipe aggregation path
+    instead of the normal deepmd/npy system path.
+    """
+    if not isinstance(path, str):
+        return False
+    p = Path(path)
+    return p.is_dir() and (p / "recipe.json").is_file()
+
+
 def _load_labels(
     systems: list[dpdata.System],
     target_key: str | list[str],
@@ -1363,6 +1376,12 @@ class DPAFineTuner:
             (mft only) Auxiliary training system directories.  Required when
             ``strategy='mft'``; must be absent otherwise.
         """
+        # Auto-detect polymer RecipeDataset inputs (directory with recipe.json).
+        # Routed to descriptor-level aggregation for all strategies because
+        # finetune/mft shell out to dp --pt train (no in-process forward).
+        if _is_recipe_dir(train_data):
+            return self._fit_recipe(train_data, valid_data=valid_data, target_key=target_key)
+
         if self.strategy == "frozen_sklearn":
             return self._fit_sklearn(train_data, type_map, target_key, labels, fmt)
 
@@ -1439,6 +1458,79 @@ class DPAFineTuner:
                 disp_freq=self.disp_freq,
             )
         return self._mft
+
+    def _fit_recipe(
+        self,
+        recipe_dir: str,
+        valid_data: str | list[str] | None = None,
+        target_key: str | None = None,
+    ) -> None:
+        """Fit on a polymer RecipeDataset using descriptor-level weighted aggregation.
+
+        **Architecture note**: ``finetune`` and ``mft`` strategies shell out to
+        ``dp --pt train`` via ``subprocess.run()`` — there is no in-process PyTorch
+        forward or loss in dpa_adapt.  Injecting recipe-level weighted aggregation
+        ``Σ wᵢ eᵢ`` into that deep forward would require modifying deepmd-kit
+        core, which is prohibited.  Therefore **all strategies** (including
+        ``frozen_head``, ``finetune``, and ``mft``) use the descriptor-level
+        path when a RecipeDataset is detected:
+
+          1. Extract per-component DPA descriptors via the frozen backbone.
+          2. Compute recipe embeddings ``Σ wᵢ eᵢ`` (weighted mean).
+          3. Fit the configured sklearn head on the recipe embeddings.
+
+        The ``valid_data`` argument is accepted for API compatibility but
+        currently not used (recipe-level validation is left to the caller via
+        :meth:`evaluate` with a separate recipe dir).
+
+        A true deep-loss recipe version would require:
+          - Modifying ``deepmd.pt.model`` to aggregate component systems before
+            the loss is computed inside ``dp --pt train``.
+          - This is out of scope without touching deepmd-kit core.
+
+        Parameters
+        ----------
+        recipe_dir : str
+            Directory containing ``recipe.json`` (and ``systems/``).
+        valid_data : str | list[str] | None
+            Accepted for API compatibility; ignored for recipe inputs.
+        target_key : str | None
+            Label key override (unused; labels come from recipe.json).
+        """
+        from dpa_adapt.data.recipe_dataset import RecipeDataset  # noqa: PLC0415
+
+        if self.strategy in {"frozen_head", "finetune", "mft"}:
+            _LOG.warning(
+                "strategy=%r was requested but recipe-level aggregation via "
+                "dp --pt train is not possible without modifying deepmd-kit "
+                "core (trainer and mft shell out via subprocess with no "
+                "in-process forward). Falling back to descriptor-level "
+                "aggregation + sklearn head.",
+                self.strategy,
+            )
+
+        dataset = RecipeDataset(
+            recipe_dir,
+            pretrained=self.pretrained,
+            model_branch=self.model_branch,
+            pooling=self.pooling,
+            cache=True,
+        )
+
+        X = dataset.get_embeddings()  # (n_recipes, feat_dim)
+        y = dataset.get_labels()  # (n_recipes,)
+
+        from sklearn.pipeline import make_pipeline  # noqa: PLC0415
+        from sklearn.preprocessing import StandardScaler  # noqa: PLC0415
+        from dpa_adapt.utils.sklearn_heads import build_sklearn_head  # noqa: PLC0415
+
+        head = build_sklearn_head(self._predictor_type, seed=self.seed, n_outputs=1)
+        self.predictor = make_pipeline(StandardScaler(), head)
+        self.predictor.fit(X, y)
+        self._fitted = True
+        self._target_key = target_key or self.property_name
+        self._task_dim = 1
+        self._recipe_dir = recipe_dir
 
     def _fit_sklearn(
         self,
