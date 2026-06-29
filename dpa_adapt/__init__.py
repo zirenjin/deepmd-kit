@@ -10,6 +10,9 @@ a specific class or function.
 __version__ = "0.1.0"
 
 _LAZY = {
+    "Surrogate": (".acquisition", "Surrogate"),
+    "acquire": (".acquisition", "acquire"),
+    "composition_pool": (".acquisition", "composition_pool"),
     "ConditionManager": (".conditions", "ConditionManager"),
     "DPAConditionError": (".conditions", "DPAConditionError"),
     "cross_validate": (".cv", "cross_validate"),
