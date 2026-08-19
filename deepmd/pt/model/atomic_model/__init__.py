@@ -42,6 +42,9 @@ from .polar_atomic_model import (
 from .population_atomic_model import (
     DPPopulationAtomicModel,
 )
+from .free_energy_atomic_model import (
+    DPFreeEnergyAtomicModel,
+)
 from .property_atomic_model import (
     DPPropertyAtomicModel,
 )
@@ -55,6 +58,7 @@ __all__ = [
     "DPDOSAtomicModel",
     "DPDipoleAtomicModel",
     "DPEnergyAtomicModel",
+    "DPFreeEnergyAtomicModel",
     "DPPolarAtomicModel",
     "DPPopulationAtomicModel",
     "DPPropertyAtomicModel",

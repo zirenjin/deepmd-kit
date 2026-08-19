@@ -1,0 +1,519 @@
+# SPDX-License-Identifier: LGPL-3.0-or-later
+"""Free energy surface (FES) fitting network.
+
+Predicts the finite-temperature Gibbs free energy of a static structure as a
+frozen pre-trained potential energy plus a learned, thermodynamically
+conditioned per-atom correction::
+
+    G(X, T, P) = E_DPA(X) + sum_i dr(h_i, T, P, v(X), c(X))
+
+The head owns two stock deepmd fitting nets over one shared descriptor pass:
+
+``baseline``
+    An :class:`EnergyFittingNet` carrying the pre-trained PES weights.  Frozen
+    by default, so ``E_DPA`` is a fixed reference rather than a moving target.
+``correction``
+    An :class:`InvarFitting` conditioned on the thermodynamic state vector,
+    which the model layer assembles (see
+    :mod:`deepmd.pt.utils.state_vector`) and hands over through ``fparam``.
+"""
+
+import logging
+from typing import (
+    Any,
+)
+
+import torch
+
+from deepmd.dpmodel import (
+    FittingOutputDef,
+    OutputVariableDef,
+    fitting_check_output,
+)
+from deepmd.pt.model.task.ener import (
+    EnergyFittingNet,
+)
+from deepmd.pt.model.task.fitting import (
+    Fitting,
+)
+from deepmd.pt.model.task.invar_fitting import (
+    InvarFitting,
+)
+from deepmd.pt.utils import (
+    env,
+)
+from deepmd.pt.utils.env import (
+    DEFAULT_PRECISION,
+    PRECISION_DICT,
+)
+from deepmd.pt.utils.state_vector import (
+    state_vector_dim,
+)
+from deepmd.pt.utils.utils import (
+    to_numpy_array,
+    to_torch_tensor,
+)
+from deepmd.utils.version import (
+    check_version_compatibility,
+)
+
+log = logging.getLogger(__name__)
+
+CORRECTION_NAME = "fes_correction"
+BASELINE_NAME = "fes_baseline"
+
+
+def _activation(name: str) -> torch.nn.Module:
+    if name == "tanh":
+        return torch.nn.Tanh()
+    if name == "relu":
+        return torch.nn.ReLU()
+    if name == "gelu":
+        return torch.nn.GELU()
+    if name in {"linear", "none"}:
+        return torch.nn.Identity()
+    raise ValueError(f"Unsupported activation_function: {name!r}")
+
+
+@Fitting.register("fes")
+@fitting_check_output
+class FreeEnergyFittingNet(Fitting):
+    """Free energy surface head: frozen PES baseline + conditioned correction.
+
+    Parameters
+    ----------
+    ntypes : int
+        Element count.
+    dim_descrpt : int
+        Embedding width per atom.
+    property_name : str
+        Name of the fitted quantity; must match the label file
+        (``free_energy.npy`` by default).
+    numb_state_fparam : int
+        Width of the *externally supplied* frame parameters, i.e. the number of
+        columns in ``fparam.npy``.  Defaults to 2 for ``[T, P]``.
+    volume_mode : str
+        How cell volume enters the state vector: ``per_atom`` (V/N, default),
+        ``total``, ``both``, or ``none``.
+    use_composition : bool
+        Whether to append the per-type composition fractions to the state vector.
+    neuron : list[int]
+        Hidden widths of the correction net.
+    fparam_neuron : list[int]
+        Hidden widths of the state-vector encoder.  The encoded state is
+        concatenated to the descriptor so that a handful of thermodynamic
+        variables are not numerically drowned by a 128+ dimensional embedding;
+        the raw (normalized) state vector is still concatenated by the
+        correction net itself, so the encoder acts as an added wide path rather
+        than a replacement.  An empty list disables the encoder.
+    resnet_dt : bool
+        Using a time-step in the ResNet construction of the correction net.
+    activation_function : str
+        Activation function of the correction net and the state encoder.
+    precision : str
+        Numerical precision.
+    baseline : dict, optional
+        Constructor arguments for the baseline :class:`EnergyFittingNet`.  These
+        must match the pre-trained PES fitting net exactly (``neuron``,
+        ``resnet_dt``, ``precision``, ``mixed_types``, ``dim_case_embd``),
+        otherwise loading the checkpoint fails with a shape mismatch.
+    freeze_baseline : bool
+        Whether to freeze the baseline weights.  True keeps ``E_DPA`` fixed,
+        which is the intended two-stage workflow.
+    trainable : bool
+        Whether the correction net and the state encoder are trainable.
+    default_fparam : list[float], optional
+        Fallback for the *external* frame parameters when ``fparam.npy`` is
+        absent.  Length must equal ``numb_state_fparam``.
+    dim_case_embd : int
+        Dimension of the case embedding, for multi-task training.
+    seed : int, optional
+        Random seed for parameter initialization.
+    type_map : list[str], optional
+        Name of each atom type.
+    exclude_types : list[int]
+        Atom types whose contribution is set to zero.
+    mixed_types : bool
+        Whether one fitting net serves all atom types.
+    """
+
+    def __init__(
+        self,
+        ntypes: int,
+        dim_descrpt: int,
+        property_name: str = "free_energy",
+        numb_state_fparam: int = 2,
+        volume_mode: str = "per_atom",
+        use_composition: bool = True,
+        neuron: list[int] | None = None,
+        fparam_neuron: list[int] | None = None,
+        resnet_dt: bool = True,
+        activation_function: str = "tanh",
+        precision: str = DEFAULT_PRECISION,
+        baseline: dict[str, Any] | None = None,
+        freeze_baseline: bool = True,
+        trainable: bool = True,
+        default_fparam: list[float] | None = None,
+        dim_case_embd: int = 0,
+        seed: int | list[int] | None = None,
+        type_map: list[str] | None = None,
+        exclude_types: list[int] | None = None,
+        mixed_types: bool = True,
+        # Injected unconditionally by _get_standard_model_components for every
+        # fitting type; "type" already selected this class via the registry.
+        type: str = "fes",
+        **kwargs: Any,
+    ) -> None:
+        del type
+        super().__init__()
+        self.ntypes = ntypes
+        self.dim_descrpt = dim_descrpt
+        self.var_name = property_name
+        self.dim_out = 1
+        self.task_dim = 1
+        self.numb_state_fparam = int(numb_state_fparam)
+        self.volume_mode = volume_mode
+        self.use_composition = bool(use_composition)
+        self.neuron = list(neuron or [128, 128, 128])
+        self.fparam_neuron = list(fparam_neuron if fparam_neuron is not None else [])
+        self.resnet_dt = resnet_dt
+        self.activation_function = activation_function
+        self.precision = precision
+        self.prec = PRECISION_DICT[self.precision]
+        self.freeze_baseline = bool(freeze_baseline)
+        self.trainable = bool(trainable)
+        self.default_fparam = default_fparam
+        self.dim_case_embd = int(dim_case_embd)
+        self.seed = seed
+        self.type_map = list(type_map or [])
+        self.exclude_types = list(exclude_types or [])
+        self.mixed_types = mixed_types
+
+        if self.default_fparam is not None and len(self.default_fparam) != (
+            self.numb_state_fparam
+        ):
+            raise ValueError(
+                f"default_fparam has {len(self.default_fparam)} entries but "
+                f"numb_state_fparam is {self.numb_state_fparam}; default_fparam "
+                "covers only the externally supplied frame parameters (T, P), "
+                "not the volume/composition columns derived from the structure."
+            )
+
+        # Full width seen by the correction net: [T, P] + v + c.
+        self.state_dim = state_vector_dim(
+            self.numb_state_fparam,
+            self.ntypes,
+            self.volume_mode,
+            self.use_composition,
+        )
+
+        baseline_cfg = dict(baseline or {})
+        for forbidden in ("numb_fparam", "numb_aparam"):
+            if baseline_cfg.pop(forbidden, 0):
+                raise ValueError(
+                    f"baseline.{forbidden} is not supported: the pre-trained PES "
+                    "baseline consumes the descriptor only, while the "
+                    "thermodynamic state vector is routed to the correction net."
+                )
+        baseline_cfg.setdefault("neuron", [128, 128, 128])
+        baseline_cfg.setdefault("resnet_dt", resnet_dt)
+        baseline_cfg.setdefault("precision", precision)
+        baseline_cfg.setdefault("activation_function", activation_function)
+        baseline_cfg.setdefault("mixed_types", mixed_types)
+        baseline_cfg.setdefault("exclude_types", self.exclude_types)
+        baseline_cfg.setdefault("type_map", self.type_map)
+        baseline_cfg.setdefault("seed", seed)
+        self.baseline_cfg = baseline_cfg
+        self.baseline = EnergyFittingNet(
+            ntypes=ntypes,
+            dim_descrpt=dim_descrpt,
+            **baseline_cfg,
+        )
+
+        fparam_out_dim = self.fparam_neuron[-1] if self.fparam_neuron else 0
+        self.correction = InvarFitting(
+            var_name=CORRECTION_NAME,
+            ntypes=ntypes,
+            dim_descrpt=dim_descrpt + fparam_out_dim,
+            dim_out=1,
+            neuron=self.neuron,
+            resnet_dt=resnet_dt,
+            numb_fparam=self.state_dim,
+            numb_aparam=0,
+            dim_case_embd=self.dim_case_embd,
+            activation_function=activation_function,
+            precision=precision,
+            mixed_types=mixed_types,
+            seed=seed,
+            exclude_types=self.exclude_types,
+            type_map=self.type_map,
+            trainable=trainable,
+        )
+
+        self.fparam_network = self._build_fparam_network(seed)
+
+        self._set_trainable()
+
+    def _build_fparam_network(self, seed: int | list[int] | None) -> torch.nn.Module:
+        """State-vector encoder: state_dim -> fparam_neuron[-1]."""
+        if not self.fparam_neuron:
+            return torch.nn.Identity()
+
+        def build() -> list[torch.nn.Module]:
+            dims = [self.state_dim, *self.fparam_neuron]
+            layers: list[torch.nn.Module] = []
+            for ii in range(len(dims) - 1):
+                layers.append(torch.nn.Linear(dims[ii], dims[ii + 1], dtype=self.prec))
+                layers.append(_activation(self.activation_function))
+            return layers
+
+        if seed is None:
+            layers = build()
+        else:
+            # Scope the seed to this net without disturbing the caller's global
+            # RNG stream (nn.Linear.reset_parameters takes no generator).
+            with torch.random.fork_rng(devices=[]):
+                torch.manual_seed(seed if isinstance(seed, int) else seed[0])
+                layers = build()
+        return torch.nn.Sequential(*layers).to(env.DEVICE)
+
+    def _set_trainable(self) -> None:
+        for param in self.baseline.parameters():
+            param.requires_grad = not self.freeze_baseline
+        for param in self.correction.parameters():
+            param.requires_grad = self.trainable
+        for param in self.fparam_network.parameters():
+            param.requires_grad = self.trainable
+
+    def forward(
+        self,
+        descriptor: torch.Tensor,
+        atype: torch.Tensor,
+        gr: torch.Tensor | None = None,
+        g2: torch.Tensor | None = None,
+        h2: torch.Tensor | None = None,
+        fparam: torch.Tensor | None = None,
+        aparam: torch.Tensor | None = None,
+        return_atomic_feature: bool = False,
+    ) -> dict[str, torch.Tensor]:
+        """Return the per-atom baseline, correction and their sum.
+
+        ``fparam`` must already be the full state vector ``[T, P, v, c]``; the
+        model layer assembles it because ``box`` does not reach the fitting net.
+        """
+        baseline = self.baseline(descriptor, atype, gr, g2, h2, None, None)["energy"]
+
+        corr_descriptor = descriptor
+        if self.fparam_neuron:
+            if fparam is None:
+                raise ValueError(
+                    "the FES head requires a state vector in fparam; got None."
+                )
+            state = fparam.reshape(descriptor.shape[0], self.state_dim).to(self.prec)
+            # Reuse the correction net's fparam statistics so the encoder and
+            # the raw concatenation path see the identically normalized vector.
+            avg = self.correction.fparam_avg
+            inv_std = self.correction.fparam_inv_std
+            if avg is not None and inv_std is not None:
+                state = (state - avg) * inv_std
+            encoded = self.fparam_network(state)
+            encoded = encoded.unsqueeze(1).expand(-1, descriptor.shape[1], -1)
+            corr_descriptor = torch.cat([descriptor.to(self.prec), encoded], dim=-1)
+
+        # Literal keys, not the module constants: TorchScript cannot close over
+        # module-level strings.  ``test_fes_output_names`` pins them to
+        # BASELINE_NAME/CORRECTION_NAME so the two cannot drift apart.
+        correction = self.correction(
+            corr_descriptor, atype, gr, g2, h2, fparam, aparam
+        )["fes_correction"]
+
+        return {
+            "fes_baseline": baseline,
+            "fes_correction": correction,
+            self.var_name: baseline + correction,
+        }
+
+    def output_def(self) -> FittingOutputDef:
+        # free_energy is the trained/served output; the other two are kept as
+        # separate variables so training logs can show how much of G comes from
+        # the frozen baseline and how much the correction actually moves.
+        # Written out longhand rather than through a local helper: this runs
+        # inside TorchScript (via fitting_output_def -> do_grad_r), which does
+        # not support nested function definitions.
+        return FittingOutputDef(
+            [
+                OutputVariableDef(
+                    self.var_name,
+                    [self.dim_out],
+                    reducible=True,
+                    r_differentiable=False,
+                    c_differentiable=False,
+                    intensive=False,
+                ),
+                OutputVariableDef(
+                    "fes_baseline",
+                    [self.dim_out],
+                    reducible=True,
+                    r_differentiable=False,
+                    c_differentiable=False,
+                    intensive=False,
+                ),
+                OutputVariableDef(
+                    "fes_correction",
+                    [self.dim_out],
+                    reducible=True,
+                    r_differentiable=False,
+                    c_differentiable=False,
+                    intensive=False,
+                ),
+            ]
+        )
+
+    # --- introspection -------------------------------------------------
+
+    @torch.jit.export
+    def get_dim_fparam(self) -> int:
+        """Width of the state vector consumed by the correction net."""
+        return self.state_dim
+
+    @torch.jit.export
+    def get_dim_state_fparam(self) -> int:
+        """Width of the frame parameters the *user* supplies (``fparam.npy``)."""
+        return self.numb_state_fparam
+
+    @torch.jit.export
+    def has_default_fparam(self) -> bool:
+        return self.default_fparam is not None
+
+    @torch.jit.export
+    def get_default_fparam(self) -> torch.Tensor | None:
+        if self.default_fparam is None:
+            return None
+        return torch.tensor(
+            self.default_fparam,
+            dtype=env.GLOBAL_PT_FLOAT_PRECISION,
+            device=env.DEVICE,
+        )
+
+    @torch.jit.export
+    def get_dim_aparam(self) -> int:
+        return 0
+
+    @torch.jit.export
+    def get_task_dim(self) -> int:
+        return self.dim_out
+
+    @torch.jit.export
+    def get_intensive(self) -> bool:
+        """G is extensive: the per-atom outputs are summed, not averaged."""
+        return False
+
+    @torch.jit.export
+    def get_type_map(self) -> list[str]:
+        return self.type_map if self.type_map is not None else []
+
+    @torch.jit.export
+    def get_sel_type(self) -> list[int]:
+        # Explicit loop, not a filtered comprehension: TorchScript does not
+        # support comprehension `if` clauses (same shape as GeneralFitting's).
+        sel_type: list[int] = []
+        for ii in range(self.ntypes):
+            if ii not in self.exclude_types:
+                sel_type.append(ii)
+        return sel_type
+
+    def change_type_map(
+        self, type_map: list[str], model_with_new_type_stat: Any | None = None
+    ) -> None:
+        self.baseline.change_type_map(type_map, model_with_new_type_stat)
+        self.correction.change_type_map(type_map, model_with_new_type_stat)
+        self.type_map = list(type_map)
+        self.ntypes = len(type_map)
+
+    def set_case_embd(self, case_idx: int) -> None:
+        """Distinguish branches that share a descriptor in multi-task training.
+
+        Only the correction net carries a case embedding; the baseline stays a
+        single frozen reference potential across branches.
+        """
+        self.correction.set_case_embd(case_idx)
+
+    def compute_input_stats(
+        self,
+        merged: Any,
+        protection: float = 1e-2,
+        stat_file_path: Any | None = None,
+    ) -> None:
+        """Delegate fparam statistics to the correction net.
+
+        ``merged`` must already carry the augmented state vector under
+        ``fparam``; :class:`DPFreeEnergyAtomicModel` wraps the sampler so that
+        the statistics are taken over ``[T, P, v, c]`` rather than the two raw
+        columns found in ``fparam.npy``.
+        """
+        self.correction.compute_input_stats(merged, protection, stat_file_path)
+
+    # --- (de)serialization ---------------------------------------------
+
+    def serialize(self) -> dict[str, Any]:
+        fparam_layers = [
+            {
+                "matrix": to_numpy_array(layer.weight),
+                "bias": to_numpy_array(layer.bias),
+            }
+            for layer in self.fparam_network.modules()
+            if isinstance(layer, torch.nn.Linear)
+        ]
+        return {
+            "@class": "Fitting",
+            "@version": 1,
+            "type": "fes",
+            "ntypes": self.ntypes,
+            "dim_descrpt": self.dim_descrpt,
+            "property_name": self.var_name,
+            "numb_state_fparam": self.numb_state_fparam,
+            "volume_mode": self.volume_mode,
+            "use_composition": self.use_composition,
+            "neuron": self.neuron,
+            "fparam_neuron": self.fparam_neuron,
+            "resnet_dt": self.resnet_dt,
+            "activation_function": self.activation_function,
+            "precision": self.precision,
+            "baseline": self.baseline_cfg,
+            "freeze_baseline": self.freeze_baseline,
+            "trainable": self.trainable,
+            "default_fparam": self.default_fparam,
+            "dim_case_embd": self.dim_case_embd,
+            "type_map": self.type_map,
+            "exclude_types": self.exclude_types,
+            "mixed_types": self.mixed_types,
+            "@variables": {
+                "baseline": self.baseline.serialize(),
+                "correction": self.correction.serialize(),
+                "fparam_network": fparam_layers,
+            },
+        }
+
+    @classmethod
+    def deserialize(cls, data: dict[str, Any]) -> "FreeEnergyFittingNet":
+        data = data.copy()
+        check_version_compatibility(data.pop("@version", 1), 1, 1)
+        data.pop("@class", None)
+        data.pop("type", None)
+        variables = data.pop("@variables")
+        obj = cls(**data)
+        obj.baseline = EnergyFittingNet.deserialize(variables["baseline"])
+        obj.correction = InvarFitting.deserialize(variables["correction"])
+        linears = [
+            layer
+            for layer in obj.fparam_network.modules()
+            if isinstance(layer, torch.nn.Linear)
+        ]
+        for layer, saved in zip(linears, variables["fparam_network"], strict=True):
+            layer.weight.data.copy_(to_torch_tensor(saved["matrix"]))
+            layer.bias.data.copy_(to_torch_tensor(saved["bias"]))
+        obj._set_trainable()
+        return obj
+
+    # make jit happy with torch 2.0.0
+    exclude_types: list[int]

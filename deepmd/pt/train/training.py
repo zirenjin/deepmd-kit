@@ -47,6 +47,7 @@ from deepmd.pt.loss import (
     EnergyHessianStdLoss,
     EnergySpinLoss,
     EnergyStdLoss,
+    FreeEnergyLoss,
     GroupPropertyLoss,
     PopulationLoss,
     PropertyLoss,
@@ -884,6 +885,9 @@ class Trainer:
                                 _pretrained_model_params["descriptor"],
                                 _model_key_from,
                             )
+                        _target_fitting_type = (
+                            _input_model_params.get("fitting_net") or {}
+                        ).get("type")
                         target_keys = [
                             i
                             for i in _random_state_dict.keys()
@@ -896,6 +900,42 @@ class Trainer:
                             use_random_initialization = _new_fitting and (
                                 ".descriptor." not in item_key
                             )
+                            # The FES head splits its fitting net in two: a
+                            # frozen ``baseline`` holding the pretrained PES
+                            # weights, plus a brand-new ``correction`` net (and
+                            # its state encoder). The generic rule cannot tell
+                            # them apart -- it keys off the fitting *type*, which
+                            # here is uniformly "not ener" -- so route each half
+                            # explicitly.
+                            fes_baseline_prefix = (
+                                f".{_model_key_from}.atomic_model.fitting_net.baseline."
+                            )
+                            fitting_prefix = (
+                                f".{_model_key_from}.atomic_model.fitting_net."
+                            )
+                            is_fes_baseline = False
+                            if _target_fitting_type == "fes":
+                                if fes_baseline_prefix in new_key:
+                                    # pretrained PES head -> frozen baseline slot,
+                                    # one level shallower in the checkpoint
+                                    is_fes_baseline = True
+                                    use_random_initialization = False
+                                    new_key = new_key.replace(
+                                        fes_baseline_prefix, fitting_prefix, 1
+                                    )
+                                elif fitting_prefix in new_key:
+                                    # correction net + state encoder: no
+                                    # pretrained counterpart exists
+                                    use_random_initialization = True
+                                elif new_key.endswith(
+                                    (".atomic_model.out_bias", ".atomic_model.out_std")
+                                ):
+                                    # The FES atomic model declares three output
+                                    # variables, so these buffers are wider than
+                                    # the pretrained energy model's. Its per-type
+                                    # energy offset is folded into the baseline's
+                                    # bias_atom_e below instead.
+                                    use_random_initialization = True
                             if (
                                 not use_random_initialization
                                 and new_key not in _origin_state_dict
@@ -934,6 +974,27 @@ class Trainer:
                                 _new_state_dict[item_key] = (
                                     _origin_state_dict[new_key].clone().detach()
                                 )
+                                if is_fes_baseline and new_key.endswith(
+                                    ".fitting_net.bias_atom_e"
+                                ):
+                                    # E_DPA also carries the pretrained atomic
+                                    # model's per-type ``out_bias``, which the FES
+                                    # atomic model deliberately keeps at zero (it
+                                    # has no free-energy label statistics to fit).
+                                    # Both are plain per-type additive offsets on
+                                    # the same quantity, so folding out_bias into
+                                    # the baseline's bias_atom_e reproduces the
+                                    # pretrained energy exactly.
+                                    out_bias_key = new_key.replace(
+                                        ".fitting_net.bias_atom_e", ".out_bias", 1
+                                    )
+                                    out_bias = _origin_state_dict.get(out_bias_key)
+                                    if out_bias is not None:
+                                        _new_state_dict[item_key] = _new_state_dict[
+                                            item_key
+                                        ] + out_bias[0].detach().to(
+                                            _new_state_dict[item_key].dtype
+                                        )
 
                     # collect model params from the pretrained model
                     for model_key in self.model_keys:
@@ -2568,6 +2629,10 @@ def get_loss(
         loss_params["task_dim"] = task_dim
         loss_params["var_name"] = var_name
         return GroupPropertyLoss(**loss_params)
+    elif loss_type == "fes":
+        loss_params["task_dim"] = _model.get_task_dim()
+        loss_params["var_name"] = _model.get_var_name()
+        return FreeEnergyLoss(**loss_params)
     elif loss_type == "population":
         loss_params["starter_learning_rate"] = start_lr
         return PopulationLoss(**loss_params)

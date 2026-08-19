@@ -60,6 +60,9 @@ from .dp_zbl_model import (
 from .ener_model import (
     EnergyModel,
 )
+from .free_energy_model import (
+    FreeEnergyModel,
+)
 from .frozen import (
     FrozenModel,
 )
@@ -360,6 +363,8 @@ def get_standard_model(model_params: dict) -> BaseModel:
         modelcls = PropertyModel
     elif fitting_net_type == "group_property":
         modelcls = GroupPropertyModel
+    elif fitting_net_type == "fes":
+        modelcls = FreeEnergyModel
     elif fitting_net_type == "population":
         modelcls = PopulationModel
     else:
@@ -687,6 +692,7 @@ __all__ = [
     "DPZBLModel",
     "DipoleModel",
     "EnergyModel",
+    "FreeEnergyModel",
     "FrozenModel",
     "LinearEnergyModel",
     "PolarModel",

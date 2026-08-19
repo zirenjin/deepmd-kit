@@ -2960,6 +2960,124 @@ def fitting_group_property() -> list[Argument]:
     return args
 
 
+@fitting_args_plugin.register("fes", doc=doc_only_pt_supported)
+def fitting_fes() -> list[Argument]:
+    """Free energy surface head: frozen PES baseline + conditioned correction.
+
+    ``numb_fparam`` is deliberately absent and replaced by
+    ``numb_state_fparam``: the head keeps two fparam widths.  The user supplies
+    only ``[T, P]`` in ``fparam.npy`` (``numb_state_fparam``), while the model
+    derives the specific volume and the composition from ``box`` and ``atype``
+    and hands the correction net the full ``[T, P, v, c]`` vector.  Naming the
+    argument differently keeps that distinction visible in the input file.
+
+    ``numb_aparam`` is unsupported (the conditioning is frame-level), and
+    ``intensive``/``distinguish_types`` have no counterpart because ``G`` is
+    always extensive and the FES atomic model does not fit an output bias from
+    label statistics.
+    """
+    doc_property_name = (
+        "The name of the fitted free energy, which must match the label file "
+        "in the dataset (`free_energy.npy` for the default)."
+    )
+    doc_numb_state_fparam = (
+        "Number of externally supplied frame parameters, i.e. the column count "
+        "of `fparam.npy`. Defaults to 2 for `[T, P]`. The specific volume and "
+        "the composition are derived from the structure and must NOT be "
+        "included here."
+    )
+    doc_volume_mode = (
+        "How the cell volume enters the state vector: `per_atom` (V/N, the "
+        "intensive default), `total` (V), `both`, or `none` (non-periodic data)."
+    )
+    doc_use_composition = (
+        "Whether to append the per-type composition fractions to the state vector."
+    )
+    doc_fparam_neuron = (
+        "Hidden sizes of the state-vector encoder, whose output is concatenated "
+        "to the descriptor. Without it a handful of thermodynamic variables are "
+        "numerically drowned by a 128+ dimensional embedding. An empty list "
+        "leaves only the correction net's own raw concatenation."
+    )
+    doc_baseline = (
+        "Constructor arguments of the frozen baseline energy fitting net. These "
+        "must match the pre-trained PES fitting net exactly (`neuron`, "
+        "`resnet_dt`, `precision`, `mixed_types`, `dim_case_embd`), otherwise "
+        "loading the checkpoint fails with a shape mismatch."
+    )
+    doc_freeze_baseline = (
+        "Whether to freeze the baseline weights so that E_DPA stays a fixed "
+        "reference. True is the intended two-stage workflow: train the PES "
+        "first, then train only the correction on thermodynamic data."
+    )
+    doc_default_fparam = (
+        "Fallback for the externally supplied frame parameters when `fparam.npy` "
+        "is absent. Its length must equal `numb_state_fparam`."
+    )
+    _unsupported = {
+        "numb_fparam",
+        "numb_aparam",
+        "intensive",
+        "distinguish_types",
+        "task_dim",
+    }
+    args = [arg for arg in fitting_property() if arg.name not in _unsupported]
+    for arg in args:
+        if arg.name == "property_name":
+            arg.optional = True
+            arg.default = "free_energy"
+            arg.doc = doc_property_name
+        elif arg.name == "neuron":
+            arg.default = [128, 128, 128]
+        elif arg.name == "default_fparam":
+            arg.doc = doc_only_pt_supported + doc_default_fparam
+    args += [
+        Argument(
+            "numb_state_fparam",
+            int,
+            optional=True,
+            default=2,
+            doc=doc_numb_state_fparam,
+        ),
+        Argument(
+            "volume_mode",
+            str,
+            optional=True,
+            default="per_atom",
+            doc=doc_volume_mode,
+        ),
+        Argument(
+            "use_composition",
+            bool,
+            optional=True,
+            default=True,
+            doc=doc_use_composition,
+        ),
+        Argument(
+            "fparam_neuron",
+            list[int],
+            optional=True,
+            default=[64, 64],
+            doc=doc_fparam_neuron,
+        ),
+        Argument(
+            "baseline",
+            dict,
+            optional=True,
+            default=None,
+            doc=doc_baseline,
+        ),
+        Argument(
+            "freeze_baseline",
+            bool,
+            optional=True,
+            default=True,
+            doc=doc_freeze_baseline,
+        ),
+    ]
+    return args
+
+
 @fitting_args_plugin.register("polar", doc=doc_polar)
 def fitting_polar() -> list[Argument]:
     doc_numb_fparam = "The dimension of the frame parameter. If set to >0, file `fparam.npy` should be included to provided the input fparams."
@@ -5014,6 +5132,54 @@ def loss_property() -> list[Argument]:
 def loss_group_property() -> list[Argument]:
     """Grouped property loss uses the property loss hyper-parameters."""
     return loss_property()
+
+
+@loss_args_plugin.register("fes", doc=doc_only_pt_supported)
+def loss_fes() -> list[Argument]:
+    """Free energy surface loss.
+
+    Shares the property loss hyper-parameters but defaults to ``mse`` and
+    reports both ``mae`` and ``rmse``: the free energy label is a single
+    well-scaled scalar per frame, so there is no heavy-tailed outlier problem
+    for ``smooth_mae`` to guard against.
+
+    The property loss's ``out_bias``/``out_std`` renormalization has no
+    counterpart here -- the FES atomic model keeps those buffers at zero/one by
+    design (the per-type offsets live inside the two sub-fitting nets), so the
+    loss works on ``G/N`` directly.
+    """
+    doc_delta_g_pref = (
+        "Prefactor of the pairwise `dG` term. Reserved; must be 0. Compute "
+        "`dG = G_a/N_a - G_b/N_b` downstream from the per-atom free energies."
+    )
+    args = [arg for arg in loss_property() if arg.name != "metric"]
+    for arg in args:
+        if arg.name == "loss_func":
+            arg.default = "mse"
+    args.append(
+        Argument(
+            "metric",
+            list,
+            optional=True,
+            default=["mae", "rmse"],
+            doc=(
+                "The metric for display. This list can include 'smooth_mae', "
+                "'mae', 'mse' and 'rmse'. The diagnostics `baseline_mae` (error "
+                "of the frozen E_DPA alone) and `correction_rms` (magnitude of "
+                "the learned correction) are always reported."
+            ),
+        )
+    )
+    args.append(
+        Argument(
+            "delta_g_pref",
+            [float, int],
+            optional=True,
+            default=0.0,
+            doc=doc_delta_g_pref,
+        )
+    )
+    return args
 
 
 # YWolfeee: Modified to support tensor type of loss args.
