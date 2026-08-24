@@ -29,6 +29,9 @@ from deepmd.pt.model.task.free_energy import (
     CORRECTION_NAME,
     FreeEnergyFittingNet,
 )
+from deepmd.pt.utils import (
+    env,
+)
 from deepmd.pt.utils.state_vector import (
     build_state_vector,
     state_vector_dim,
@@ -39,6 +42,14 @@ NTYPES = len(TYPE_MAP)
 NATOMS = 6
 ATYPE_ROW = [0, 0, 1, 1, 1, 1]
 CELL = 8.0
+
+
+def _tensor(data, dtype):
+    return torch.tensor(data, dtype=dtype, device=env.DEVICE)
+
+
+def _numpy(tensor):
+    return tensor.detach().cpu().numpy()
 
 
 def _model_params(**fitting_overrides):
@@ -73,12 +84,12 @@ def _make_model(**fitting_overrides):
 
 def _batch(nframes=2, seed=0):
     rng = np.random.default_rng(seed)
-    coord = torch.tensor(rng.uniform(0, 5, (nframes, NATOMS, 3)), dtype=torch.float64)
-    atype = torch.tensor([ATYPE_ROW] * nframes, dtype=torch.long)
-    box = torch.tensor(
+    coord = _tensor(rng.uniform(0, 5, (nframes, NATOMS, 3)), dtype=torch.float64)
+    atype = _tensor([ATYPE_ROW] * nframes, dtype=torch.long)
+    box = _tensor(
         np.tile(np.eye(3).reshape(1, 9) * CELL, (nframes, 1)), dtype=torch.float64
     )
-    fparam = torch.tensor(
+    fparam = _tensor(
         [[300.0 + 300.0 * ii, 1.0] for ii in range(nframes)], dtype=torch.float64
     )
     return coord, atype, box, fparam
@@ -94,20 +105,20 @@ def test_state_vector_matches_hand_computation():
     )
     assert state.shape == (2, state_vector_dim(2, NTYPES, "per_atom", True))
     # [T, P, V/N, c_Si, c_O]
-    np.testing.assert_allclose(state[:, :2].numpy(), fparam.numpy())
-    np.testing.assert_allclose(state[:, 2].numpy(), CELL**3 / NATOMS)
-    np.testing.assert_allclose(state[:, 3].numpy(), 2 / NATOMS)
-    np.testing.assert_allclose(state[:, 4].numpy(), 4 / NATOMS)
+    np.testing.assert_allclose(_numpy(state[:, :2]), _numpy(fparam))
+    np.testing.assert_allclose(_numpy(state[:, 2]), CELL**3 / NATOMS)
+    np.testing.assert_allclose(_numpy(state[:, 3]), 2 / NATOMS)
+    np.testing.assert_allclose(_numpy(state[:, 4]), 4 / NATOMS)
 
 
 def test_state_vector_ignores_virtual_atoms():
     """Padding atoms (atype < 0) must not count toward N or the composition."""
-    box = torch.tensor(np.eye(3).reshape(1, 9) * CELL, dtype=torch.float64)
-    atype = torch.tensor([[0, 0, 1, 1, -1, -1]], dtype=torch.long)
+    box = _tensor(np.eye(3).reshape(1, 9) * CELL, dtype=torch.float64)
+    atype = _tensor([[0, 0, 1, 1, -1, -1]], dtype=torch.long)
     state = build_state_vector(box, atype, None, NTYPES, "per_atom", True)
-    np.testing.assert_allclose(state[:, 0].numpy(), CELL**3 / 4)  # N = 4, not 6
-    np.testing.assert_allclose(state[:, 1].numpy(), 0.5)
-    np.testing.assert_allclose(state[:, 2].numpy(), 0.5)
+    np.testing.assert_allclose(_numpy(state[:, 0]), CELL**3 / 4)  # N = 4, not 6
+    np.testing.assert_allclose(_numpy(state[:, 1]), 0.5)
+    np.testing.assert_allclose(_numpy(state[:, 2]), 0.5)
 
 
 @pytest.mark.parametrize(
@@ -199,8 +210,8 @@ def test_correction_responds_to_temperature():
     model = _make_model()
     coord, atype, box, _ = _batch(nframes=2)
     coord[1] = coord[0]  # identical structures, different T
-    cold = torch.tensor([[300.0, 1.0], [300.0, 1.0]], dtype=torch.float64)
-    hot = torch.tensor([[300.0, 1.0], [2000.0, 1.0]], dtype=torch.float64)
+    cold = _tensor([[300.0, 1.0], [300.0, 1.0]], dtype=torch.float64)
+    hot = _tensor([[300.0, 1.0], [2000.0, 1.0]], dtype=torch.float64)
 
     out_cold = model(coord, atype, box=box, fparam=cold)
     out_hot = model(coord, atype, box=box, fparam=hot)
@@ -248,7 +259,7 @@ def test_default_fparam_fills_in_for_missing_fparam():
         coord,
         atype,
         box=box,
-        fparam=torch.tensor([[300.0, 1.0]] * 2, dtype=torch.float64),
+        fparam=_tensor([[300.0, 1.0]] * 2, dtype=torch.float64),
     )
     implicit = model(coord, atype, box=box, fparam=None)
     assert torch.allclose(explicit["free_energy"], implicit["free_energy"])
@@ -292,18 +303,16 @@ def test_forward_lower_requires_the_full_state_vector():
 def _stat_sample(nframes=4):
     rng = np.random.default_rng(0)
     return {
-        "coord": torch.tensor(
-            rng.uniform(0, 5, (nframes, NATOMS, 3)), dtype=torch.float64
-        ),
-        "atype": torch.tensor([ATYPE_ROW] * nframes, dtype=torch.long),
-        "box": torch.tensor(
+        "coord": _tensor(rng.uniform(0, 5, (nframes, NATOMS, 3)), dtype=torch.float64),
+        "atype": _tensor([ATYPE_ROW] * nframes, dtype=torch.long),
+        "box": _tensor(
             np.tile(np.eye(3).reshape(1, 9) * CELL, (nframes, 1)), dtype=torch.float64
         ),
-        "fparam": torch.tensor(
+        "fparam": _tensor(
             [[300.0, 1.0], [600.0, 1.0], [900.0, 1.0], [1200.0, 1.0]],
             dtype=torch.float64,
         ),
-        "natoms": torch.tensor([[NATOMS, NATOMS, 2, 4]] * nframes, dtype=torch.long),
+        "natoms": _tensor([[NATOMS, NATOMS, 2, 4]] * nframes, dtype=torch.long),
     }
 
 
@@ -336,7 +345,9 @@ def test_out_bias_stays_zero():
     """
     model = _make_model()
     sample = _stat_sample()
-    sample["free_energy"] = torch.full((4, 1), -123.0, dtype=torch.float64)
+    sample["free_energy"] = torch.full(
+        (4, 1), -123.0, dtype=torch.float64, device=env.DEVICE
+    )
     model.atomic_model.change_out_bias([sample], bias_adjust_mode="set-by-statistic")
     assert torch.count_nonzero(model.atomic_model.out_bias) == 0
 

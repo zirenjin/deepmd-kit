@@ -263,7 +263,14 @@ class FreeEnergyFittingNet(Fitting):
             dims = [self.state_dim, *self.fparam_neuron]
             layers: list[torch.nn.Module] = []
             for ii in range(len(dims) - 1):
-                layers.append(torch.nn.Linear(dims[ii], dims[ii + 1], dtype=self.prec))
+                layers.append(
+                    torch.nn.Linear(
+                        dims[ii],
+                        dims[ii + 1],
+                        dtype=self.prec,
+                        device=env.DEVICE,
+                    )
+                )
                 layers.append(_activation(self.activation_function))
             return layers
 
