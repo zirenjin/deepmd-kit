@@ -100,16 +100,20 @@ def build_state_vector(
         ``nf x state_vector_dim(...)``, in the model's global float precision.
     """
     nf = atype.shape[0]
-    device = atype.device
-    real = atype >= 0
-    n_real = real.sum(dim=1)
 
     blocks: list[torch.Tensor] = []
     dtype = torch.float64
+    device = atype.device
     if fparam is not None:
         dtype = fparam.dtype
+        device = fparam.device
     elif box is not None:
         dtype = box.dtype
+        device = box.device
+
+    atype_work = atype.to(device=device)
+    real = atype_work >= 0
+    n_real = real.sum(dim=1)
 
     if numb_state_fparam > 0:
         if fparam is None:
@@ -123,7 +127,7 @@ def build_state_vector(
             raise ValueError(
                 f"expected {numb_state_fparam} fparam column(s), got {fparam.shape[1]}."
             )
-        blocks.append(fparam.to(dtype))
+        blocks.append(fparam.to(device=device, dtype=dtype))
 
     n_real_f = n_real.to(device=device, dtype=dtype).clamp_min(1.0)
 
@@ -134,7 +138,7 @@ def build_state_vector(
                 "box is None. Non-periodic frames have no cell volume; use "
                 'volume_mode="none" for those.'
             )
-        vol = cell_volume(box.to(dtype))
+        vol = cell_volume(box.to(device=device, dtype=dtype))
         if volume_mode == "per_atom":
             blocks.append((vol / n_real_f).reshape(nf, 1))
         elif volume_mode == "total":
@@ -152,7 +156,7 @@ def build_state_vector(
     if use_composition:
         # one_hot demands int64; the data pipeline hands out int32 in places.
         onehot = torch.nn.functional.one_hot(
-            atype.clamp_min(0).to(torch.long), ntypes
+            atype_work.clamp_min(0).to(torch.long), ntypes
         ).to(dtype)
         onehot = onehot * real.unsqueeze(-1).to(dtype)
         blocks.append(onehot.sum(dim=1) / n_real_f.reshape(nf, 1))

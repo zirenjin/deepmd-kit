@@ -121,6 +121,24 @@ def test_state_vector_ignores_virtual_atoms():
     np.testing.assert_allclose(_numpy(state[:, 2]), 0.5)
 
 
+def test_state_vector_follows_float_input_device():
+    """Training may keep integer atom types on CPU while floats live on CUDA."""
+    if env.DEVICE.type == "cpu":
+        pytest.skip("mixed-device regression needs a CUDA test device")
+    box = _tensor(np.eye(3).reshape(1, 9) * CELL, dtype=torch.float64)
+    fparam = _tensor([[300.0, 1.0]], dtype=torch.float64)
+    atype = torch.tensor(
+        [[0, 0, 1, 1, -1, -1]], dtype=torch.long, device=torch.device("cpu")
+    )
+    state = build_state_vector(
+        box, atype, fparam, NTYPES, "per_atom", True, numb_state_fparam=2
+    )
+    assert state.device == env.DEVICE
+    np.testing.assert_allclose(_numpy(state[:, 2]), CELL**3 / 4)
+    np.testing.assert_allclose(_numpy(state[:, 3]), 0.5)
+    np.testing.assert_allclose(_numpy(state[:, 4]), 0.5)
+
+
 @pytest.mark.parametrize(
     ("volume_mode", "use_composition", "expected"),
     [
