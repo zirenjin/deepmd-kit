@@ -446,6 +446,7 @@ class FreeEnergyFittingNet(Fitting):
             "concave",
             "concave_log",
             "entropy_affine",
+            "concave_entropy",
         ):
             temperature_scale = full_state[:, :1] / self.temperature_scale
             correction_fparam = full_state[:, 1:]
