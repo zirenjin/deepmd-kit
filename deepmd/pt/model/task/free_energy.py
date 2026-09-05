@@ -214,8 +214,10 @@ class FreeEnergyFittingNet(Fitting):
         ):
             raise ValueError("temperature_knots must contain four increasing values")
         self.phase_gauge_neuron = list(phase_gauge_neuron or [])
-        if phase_gauge_pooling not in ("mean", "mean_max"):
-            raise ValueError("phase_gauge_pooling must be 'mean' or 'mean_max'")
+        if phase_gauge_pooling not in ("mean", "mean_max", "mean_std_max"):
+            raise ValueError(
+                "phase_gauge_pooling must be 'mean', 'mean_max', or 'mean_std_max'"
+            )
         self.phase_gauge_pooling = phase_gauge_pooling
         if phase_gauge_basis not in ("piecewise_linear", "concave"):
             raise ValueError(
@@ -496,7 +498,14 @@ class FreeEnergyFittingNet(Fitting):
         if not self.phase_gauge_neuron:
             return torch.nn.Identity()
         dims = [
-            self.dim_descrpt * (2 if self.phase_gauge_pooling == "mean_max" else 1)
+            self.dim_descrpt
+            * (
+                3
+                if self.phase_gauge_pooling == "mean_std_max"
+                else 2
+                if self.phase_gauge_pooling == "mean_max"
+                else 1
+            )
             + self.correction_state_dim,
             *self.phase_gauge_neuron,
             # Keep four outputs for checkpoint compatibility with the
@@ -640,6 +649,25 @@ class FreeEnergyFittingNet(Fitting):
                 )
                 pooled_descriptor = torch.cat(
                     [pooled_descriptor, torch.max(masked_descriptor, dim=1).values],
+                    dim=-1,
+                )
+            elif self.phase_gauge_pooling == "mean_std_max":
+                centered = descriptor.to(self.prec) - pooled_descriptor.unsqueeze(1)
+                variance = torch.sum(
+                    centered * centered * atom_mask.unsqueeze(-1), dim=1
+                ) / atom_count.unsqueeze(-1)
+                std_descriptor = torch.sqrt(torch.clamp(variance, min=1.0e-12))
+                masked_descriptor = torch.where(
+                    atom_mask.unsqueeze(-1) > 0.0,
+                    descriptor.to(self.prec),
+                    torch.full_like(descriptor, -torch.inf),
+                )
+                pooled_descriptor = torch.cat(
+                    [
+                        pooled_descriptor,
+                        std_descriptor,
+                        torch.max(masked_descriptor, dim=1).values,
+                    ],
                     dim=-1,
                 )
             gauge_state = correction_fparam.reshape(
