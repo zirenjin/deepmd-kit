@@ -963,15 +963,23 @@ class FreeEnergyFittingNet(Fitting):
             "concave_entropy",
             "piecewise_linear",
         ):
-            if callable(merged):
-                samples = merged()
-            else:
-                samples = merged
-            reduced = []
-            for sample in samples:
-                item = dict(sample)
-                item["fparam"] = sample["fparam"][..., 1:]
-                reduced.append(item)
+            def reduce_samples(samples: list[dict]) -> list[dict]:
+                reduced_samples = []
+                for sample in samples:
+                    item = dict(sample)
+                    item["fparam"] = sample["fparam"][..., 1:]
+                    reduced_samples.append(item)
+                return reduced_samples
+
+            # Keep the sampler lazy. Paired loaders intentionally do not
+            # expose the ordinary loader internals used during statistics;
+            # when a stats file exists, the fitting nets can load it without
+            # sampling at all.
+            reduced = (
+                (lambda: reduce_samples(merged()))
+                if callable(merged)
+                else reduce_samples(merged)
+            )
             self.correction.compute_input_stats(reduced, protection, stat_file_path)
             if self.temperature_basis in ("affine", "entropy_affine"):
                 self.slope_correction.compute_input_stats(
