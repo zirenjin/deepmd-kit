@@ -150,6 +150,7 @@ class FreeEnergyFittingNet(Fitting):
         curvature_scale: float = 1.0e-2,
         temperature_knots: list[float] | None = None,
         phase_gauge_neuron: list[int] | None = None,
+        phase_gauge_pooling: str = "mean",
         center_local_correction: bool = False,
         neuron: list[int] | None = None,
         fparam_neuron: list[int] | None = None,
@@ -211,6 +212,9 @@ class FreeEnergyFittingNet(Fitting):
         ):
             raise ValueError("temperature_knots must contain four increasing values")
         self.phase_gauge_neuron = list(phase_gauge_neuron or [])
+        if phase_gauge_pooling not in ("mean", "mean_max"):
+            raise ValueError("phase_gauge_pooling must be 'mean' or 'mean_max'")
+        self.phase_gauge_pooling = phase_gauge_pooling
         if self.phase_gauge_neuron and self.temperature_basis != "piecewise_linear":
             raise ValueError(
                 "phase_gauge_neuron currently requires temperature_basis="
@@ -480,7 +484,8 @@ class FreeEnergyFittingNet(Fitting):
         if not self.phase_gauge_neuron:
             return torch.nn.Identity()
         dims = [
-            self.dim_descrpt + self.correction_state_dim,
+            self.dim_descrpt * (2 if self.phase_gauge_pooling == "mean_max" else 1)
+            + self.correction_state_dim,
             *self.phase_gauge_neuron,
             4,
         ]
@@ -607,6 +612,16 @@ class FreeEnergyFittingNet(Fitting):
             pooled_descriptor = torch.sum(
                 descriptor.to(self.prec) * atom_mask.unsqueeze(-1), dim=1
             ) / atom_count.unsqueeze(-1)
+            if self.phase_gauge_pooling == "mean_max":
+                masked_descriptor = torch.where(
+                    atom_mask.unsqueeze(-1) > 0.0,
+                    descriptor.to(self.prec),
+                    torch.full_like(descriptor, -torch.inf),
+                )
+                pooled_descriptor = torch.cat(
+                    [pooled_descriptor, torch.max(masked_descriptor, dim=1).values],
+                    dim=-1,
+                )
             gauge_state = correction_fparam.reshape(
                 descriptor.shape[0], self.correction_state_dim
             ).to(self.prec)
@@ -986,6 +1001,7 @@ class FreeEnergyFittingNet(Fitting):
             "curvature_scale": self.curvature_scale,
             "temperature_knots": self.temperature_knots,
             "phase_gauge_neuron": self.phase_gauge_neuron,
+            "phase_gauge_pooling": self.phase_gauge_pooling,
             "center_local_correction": self.center_local_correction,
             "neuron": self.neuron,
             "fparam_neuron": self.fparam_neuron,

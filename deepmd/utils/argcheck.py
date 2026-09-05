@@ -3104,6 +3104,13 @@ def fitting_fes() -> list[Argument]:
             ),
         ),
         Argument(
+            "phase_gauge_pooling",
+            str,
+            optional=True,
+            default="mean",
+            doc="Invariant pooling for the phase gauge: `mean` or `mean_max`.",
+        ),
+        Argument(
             "center_local_correction",
             bool,
             optional=True,
