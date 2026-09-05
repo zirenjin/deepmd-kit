@@ -237,10 +237,11 @@ class FreeEnergyFittingNet(Fitting):
             "piecewise_linear",
             "concave",
             "concave_residual",
+            "adaptive_concave_residual",
         ):
             raise ValueError(
                 "phase_gauge_basis must be 'piecewise_linear', 'concave', "
-                "or 'concave_residual'"
+                "'concave_residual', or 'adaptive_concave_residual'"
             )
         self.phase_gauge_basis = phase_gauge_basis
         self.phase_gauge_only = bool(phase_gauge_only)
@@ -480,6 +481,7 @@ class FreeEnergyFittingNet(Fitting):
         self.fparam_network = self._build_fparam_network(seed)
         self.phase_gauge_atom_network = self._build_phase_gauge_atom_network()
         self.phase_gauge_network = self._build_phase_gauge_network()
+        self.phase_gauge_gate_network = self._build_phase_gauge_gate_network()
 
         self._set_trainable()
 
@@ -565,6 +567,24 @@ class FreeEnergyFittingNet(Fitting):
             _activation(self.activation_function),
         ).to(env.DEVICE)
 
+    def _build_phase_gauge_gate_network(self) -> torch.nn.Module:
+        """Build a near-closed gate for the concave residual component."""
+        if (
+            self.phase_gauge_basis != "adaptive_concave_residual"
+            or not self.phase_gauge_neuron
+        ):
+            return torch.nn.Identity()
+        dim = self.dim_descrpt + self.correction_state_dim
+        if self.phase_gauge_pooling == "type_mean":
+            dim += (self.ntypes - 1) * self.dim_descrpt
+        elif self.phase_gauge_pooling in ("mean_max", "mean_std", "deep_mean"):
+            dim += self.dim_descrpt
+        elif self.phase_gauge_pooling == "mean_std_max":
+            dim += 2 * self.dim_descrpt
+        layer = torch.nn.Linear(dim, 1, dtype=self.prec, device=env.DEVICE)
+        torch.nn.init.constant_(layer.bias, -5.0)
+        return layer.to(env.DEVICE)
+
     def _center_local_correction(
         self, value: torch.Tensor, atype: torch.Tensor
     ) -> torch.Tensor:
@@ -603,6 +623,11 @@ class FreeEnergyFittingNet(Fitting):
             param.requires_grad = self.trainable and bool(self.phase_gauge_neuron)
         for param in self.phase_gauge_atom_network.parameters():
             param.requires_grad = self.trainable and self.phase_gauge_pooling == "deep_mean"
+        for param in self.phase_gauge_gate_network.parameters():
+            param.requires_grad = (
+                self.trainable
+                and self.phase_gauge_basis == "adaptive_concave_residual"
+            )
 
     def forward(
         self,
@@ -785,6 +810,26 @@ class FreeEnergyFittingNet(Fitting):
                     phase_gauge = phase_gauge + self.concavity_mix * (
                         concave_gauge - phase_gauge
                     )
+            elif self.phase_gauge_basis == "adaptive_concave_residual":
+                curvature = torch.nn.functional.softplus(phase_gauge[:, 2:3])
+                slope = phase_gauge[:, 1:2] + phase_gauge[:, 3:4]
+                concave_gauge = torch.cat(
+                    [
+                        phase_gauge[:, 0:1]
+                        + slope
+                        * (torch.full_like(full_state[:, :1], knot)
+                           / self.temperature_scale)
+                        - curvature
+                        * (torch.full_like(full_state[:, :1], knot)
+                           / self.temperature_scale) ** 2
+                        for knot in self.temperature_knots
+                    ],
+                    dim=1,
+                )
+                gate = torch.sigmoid(self.phase_gauge_gate_network(gauge_input))
+                phase_gauge = phase_gauge + self.concavity_mix * gate * (
+                    concave_gauge - phase_gauge
+                )
         if self.temperature_basis == "piecewise_linear":
             if self.phase_gauge_only:
                 knot_1 = torch.zeros_like(correction)
@@ -1160,6 +1205,14 @@ class FreeEnergyFittingNet(Fitting):
             for layer in self.phase_gauge_atom_network.modules()
             if isinstance(layer, torch.nn.Linear)
         ]
+        phase_gauge_gate_layers = [
+            {
+                "matrix": to_numpy_array(layer.weight),
+                "bias": to_numpy_array(layer.bias),
+            }
+            for layer in self.phase_gauge_gate_network.modules()
+            if isinstance(layer, torch.nn.Linear)
+        ]
         return {
             "@class": "Fitting",
             "@version": 1,
@@ -1178,6 +1231,7 @@ class FreeEnergyFittingNet(Fitting):
             "phase_gauge_neuron": self.phase_gauge_neuron,
             "phase_gauge_pooling": self.phase_gauge_pooling,
             "phase_gauge_basis": self.phase_gauge_basis,
+            "concavity_mix": self.concavity_mix,
             "phase_gauge_only": self.phase_gauge_only,
             "center_local_correction": self.center_local_correction,
             "neuron": self.neuron,
@@ -1202,8 +1256,9 @@ class FreeEnergyFittingNet(Fitting):
                 "slope_correction": self.slope_correction.serialize(),
                 "curvature_correction": self.curvature_correction.serialize(),
                 "fparam_network": fparam_layers,
-            "phase_gauge_network": phase_gauge_layers,
+                "phase_gauge_network": phase_gauge_layers,
                 "phase_gauge_atom_network": phase_gauge_atom_layers,
+                "phase_gauge_gate_network": phase_gauge_gate_layers,
             },
         }
 
@@ -1256,6 +1311,17 @@ class FreeEnergyFittingNet(Fitting):
             ]
             for layer, saved in zip(
                 atom_linears, variables["phase_gauge_atom_network"], strict=True
+            ):
+                layer.weight.data.copy_(to_torch_tensor(saved["matrix"]))
+                layer.bias.data.copy_(to_torch_tensor(saved["bias"]))
+        if "phase_gauge_gate_network" in variables:
+            gate_linears = [
+                layer
+                for layer in obj.phase_gauge_gate_network.modules()
+                if isinstance(layer, torch.nn.Linear)
+            ]
+            for layer, saved in zip(
+                gate_linears, variables["phase_gauge_gate_network"], strict=True
             ):
                 layer.weight.data.copy_(to_torch_tensor(saved["matrix"]))
                 layer.bias.data.copy_(to_torch_tensor(saved["bias"]))
