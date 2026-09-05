@@ -3121,6 +3121,16 @@ def fitting_fes() -> list[Argument]:
             ),
         ),
         Argument(
+            "phase_gauge_only",
+            bool,
+            optional=True,
+            default=False,
+            doc=(
+                "Use only the invariant global phase gauge for the thermodynamic "
+                "correction; local atomic residual heads are disabled."
+            ),
+        ),
+        Argument(
             "center_local_correction",
             bool,
             optional=True,

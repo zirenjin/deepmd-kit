@@ -152,6 +152,7 @@ class FreeEnergyFittingNet(Fitting):
         phase_gauge_neuron: list[int] | None = None,
         phase_gauge_pooling: str = "mean",
         phase_gauge_basis: str = "piecewise_linear",
+        phase_gauge_only: bool = False,
         center_local_correction: bool = False,
         neuron: list[int] | None = None,
         fparam_neuron: list[int] | None = None,
@@ -221,6 +222,11 @@ class FreeEnergyFittingNet(Fitting):
                 "phase_gauge_basis must be 'piecewise_linear' or 'concave'"
             )
         self.phase_gauge_basis = phase_gauge_basis
+        self.phase_gauge_only = bool(phase_gauge_only)
+        if self.phase_gauge_only and not self.phase_gauge_neuron:
+            raise ValueError("phase_gauge_only requires phase_gauge_neuron")
+        if self.phase_gauge_only and self.temperature_basis != "piecewise_linear":
+            raise ValueError("phase_gauge_only requires temperature_basis='piecewise_linear'")
         if self.phase_gauge_neuron and self.temperature_basis != "piecewise_linear":
             raise ValueError(
                 "phase_gauge_neuron currently requires temperature_basis="
@@ -603,15 +609,20 @@ class FreeEnergyFittingNet(Fitting):
         # Literal keys, not the module constants: TorchScript cannot close over
         # module-level strings.  ``test_fes_output_names`` pins them to
         # BASELINE_NAME/CORRECTION_NAME so the two cannot drift apart.
-        correction = self.correction(
-            corr_descriptor,
-            atype,
-            gr,
-            g2,
-            h2,
-            correction_fparam,
-            aparam,
-        )["fes_correction"]
+        if self.phase_gauge_only:
+            correction = torch.zeros(
+                (*descriptor.shape[:2], 1), dtype=descriptor.dtype, device=descriptor.device
+            )
+        else:
+            correction = self.correction(
+                corr_descriptor,
+                atype,
+                gr,
+                g2,
+                h2,
+                correction_fparam,
+                aparam,
+            )["fes_correction"]
         phase_gauge = torch.zeros(
             (descriptor.shape[0], 4), dtype=correction.dtype, device=descriptor.device
         )
@@ -663,15 +674,20 @@ class FreeEnergyFittingNet(Fitting):
                     dim=1,
                 )
         if self.temperature_basis == "piecewise_linear":
-            knot_1 = self.knot_correction_1(
-                corr_descriptor, atype, gr, g2, h2, correction_fparam, aparam
-            )["fes_knot_1"]
-            knot_2 = self.knot_correction_2(
-                corr_descriptor, atype, gr, g2, h2, correction_fparam, aparam
-            )["fes_knot_2"]
-            knot_3 = self.knot_correction_3(
-                corr_descriptor, atype, gr, g2, h2, correction_fparam, aparam
-            )["fes_knot_3"]
+            if self.phase_gauge_only:
+                knot_1 = torch.zeros_like(correction)
+                knot_2 = torch.zeros_like(correction)
+                knot_3 = torch.zeros_like(correction)
+            else:
+                knot_1 = self.knot_correction_1(
+                    corr_descriptor, atype, gr, g2, h2, correction_fparam, aparam
+                )["fes_knot_1"]
+                knot_2 = self.knot_correction_2(
+                    corr_descriptor, atype, gr, g2, h2, correction_fparam, aparam
+                )["fes_knot_2"]
+                knot_3 = self.knot_correction_3(
+                    corr_descriptor, atype, gr, g2, h2, correction_fparam, aparam
+                )["fes_knot_3"]
             if self.center_local_correction:
                 correction = self._center_local_correction(correction, atype)
                 knot_1 = self._center_local_correction(knot_1, atype)
@@ -1041,6 +1057,7 @@ class FreeEnergyFittingNet(Fitting):
             "phase_gauge_neuron": self.phase_gauge_neuron,
             "phase_gauge_pooling": self.phase_gauge_pooling,
             "phase_gauge_basis": self.phase_gauge_basis,
+            "phase_gauge_only": self.phase_gauge_only,
             "center_local_correction": self.center_local_correction,
             "neuron": self.neuron,
             "fparam_neuron": self.fparam_neuron,
