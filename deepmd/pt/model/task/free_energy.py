@@ -194,12 +194,15 @@ class FreeEnergyFittingNet(Fitting):
             "concave_log",
             "entropy_affine",
             "concave_entropy",
+            "polynomial",
+            "tlog_polynomial",
             "piecewise_linear",
         ):
             raise ValueError(
                 "temperature_basis must be 'mlp', 'linear_zero_anchor', 'affine', "
                 "or 'concave', 'concave_log', 'entropy_affine', or "
-                "'concave_entropy', or 'piecewise_linear'"
+                "'concave_entropy', 'polynomial', or 'tlog_polynomial', "
+                "or 'piecewise_linear'"
             )
         if temperature_scale <= 0.0:
             raise ValueError("temperature_scale must be positive")
@@ -294,6 +297,8 @@ class FreeEnergyFittingNet(Fitting):
             "concave_log",
             "entropy_affine",
             "concave_entropy",
+            "polynomial",
+            "tlog_polynomial",
             "piecewise_linear",
         ):
             if self.numb_state_fparam < 1:
@@ -344,8 +349,14 @@ class FreeEnergyFittingNet(Fitting):
             type_map=self.type_map,
             trainable=trainable,
         )
-        knot_neuron = self.neuron if self.temperature_basis == "piecewise_linear" else [1]
-        knot_trainable = trainable and self.temperature_basis == "piecewise_linear"
+        knot_neuron = (
+            self.neuron
+            if self.temperature_basis in ("piecewise_linear", "polynomial", "tlog_polynomial")
+            else [1]
+        )
+        knot_trainable = trainable and self.temperature_basis in (
+            "piecewise_linear", "polynomial", "tlog_polynomial"
+        )
         self.knot_correction_1 = InvarFitting(
             var_name="fes_knot_1",
             ntypes=ntypes,
@@ -599,7 +610,9 @@ class FreeEnergyFittingNet(Fitting):
         for param in self.knot_correction_2.parameters():
             param.requires_grad = self.trainable and self.temperature_basis == "piecewise_linear"
         for param in self.knot_correction_3.parameters():
-            param.requires_grad = self.trainable and self.temperature_basis == "piecewise_linear"
+            param.requires_grad = self.trainable and self.temperature_basis in (
+                "piecewise_linear", "polynomial", "tlog_polynomial"
+            )
         for param in self.slope_correction.parameters():
             param.requires_grad = self.trainable and self.temperature_basis in (
                 "affine",
@@ -657,6 +670,8 @@ class FreeEnergyFittingNet(Fitting):
             "concave_log",
             "entropy_affine",
             "concave_entropy",
+            "polynomial",
+            "tlog_polynomial",
             "piecewise_linear",
         ):
             temperature_scale = full_state[:, :1] / self.temperature_scale
@@ -834,7 +849,17 @@ class FreeEnergyFittingNet(Fitting):
             slope = phase_gauge[:, 1:2]
             curvature = torch.nn.functional.softplus(phase_gauge[:, 2:3])
             entropy = torch.nn.functional.softplus(phase_gauge[:, 3:4])
-            if self.temperature_basis == "affine":
+            if self.temperature_basis == "polynomial":
+                continuous_phase_gauge = (
+                    intercept + slope * x + phase_gauge[:, 2:3] * x.square()
+                    + phase_gauge[:, 3:4] * x.pow(3)
+                )
+            elif self.temperature_basis == "tlog_polynomial":
+                continuous_phase_gauge = (
+                    intercept + slope * x + phase_gauge[:, 2:3] * x * torch.log(x)
+                    + phase_gauge[:, 3:4] * x.square()
+                )
+            elif self.temperature_basis == "affine":
                 continuous_phase_gauge = intercept + slope * x
             elif self.temperature_basis == "concave":
                 continuous_phase_gauge = intercept + slope * x - self.curvature_scale * curvature * x.square()
@@ -895,6 +920,21 @@ class FreeEnergyFittingNet(Fitting):
                 + knot_2 * w2.unsqueeze(1)
                 + knot_3 * w3.unsqueeze(1)
             )
+        elif self.temperature_basis in ("polynomial", "tlog_polynomial"):
+            slope = self.slope_correction(
+                corr_descriptor, atype, gr, g2, h2, correction_fparam, aparam
+            )["fes_slope"]
+            curvature = self.curvature_correction(
+                corr_descriptor, atype, gr, g2, h2, correction_fparam, aparam
+            )["fes_curvature"]
+            cubic = self.knot_correction_3(
+                corr_descriptor, atype, gr, g2, h2, correction_fparam, aparam
+            )["fes_knot_3"]
+            x = temperature_scale.unsqueeze(1)
+            if self.temperature_basis == "polynomial":
+                correction = correction + slope * x + curvature * x.square() + cubic * x.pow(3)
+            else:
+                correction = correction + slope * x + curvature * x * torch.log(x) + cubic * x.square()
         elif self.temperature_basis == "linear_zero_anchor":
             correction = correction * temperature_scale.unsqueeze(1)
         elif self.temperature_basis == "affine":
@@ -1174,18 +1214,18 @@ class FreeEnergyFittingNet(Fitting):
                 else reduce_samples(merged)
             )
             self.correction.compute_input_stats(reduced, protection, stat_file_path)
-            if self.temperature_basis in ("affine", "entropy_affine"):
+            if self.temperature_basis in ("affine", "entropy_affine", "polynomial", "tlog_polynomial"):
                 self.slope_correction.compute_input_stats(
                     reduced, protection, stat_file_path
                 )
-            if self.temperature_basis in ("concave", "concave_log", "concave_entropy"):
+            if self.temperature_basis in ("concave", "concave_log", "concave_entropy", "polynomial", "tlog_polynomial"):
                 self.slope_correction.compute_input_stats(
                     reduced, protection, stat_file_path
                 )
                 self.curvature_correction.compute_input_stats(
                     reduced, protection, stat_file_path
                 )
-            if self.temperature_basis == "piecewise_linear":
+            if self.temperature_basis in ("piecewise_linear", "polynomial", "tlog_polynomial"):
                 self.knot_correction_1.compute_input_stats(
                     reduced, protection, stat_file_path
                 )
