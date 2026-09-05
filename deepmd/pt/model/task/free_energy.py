@@ -493,7 +493,10 @@ class FreeEnergyFittingNet(Fitting):
             self.dim_descrpt * (2 if self.phase_gauge_pooling == "mean_max" else 1)
             + self.correction_state_dim,
             *self.phase_gauge_neuron,
-            3 if self.phase_gauge_basis == "concave" else 4,
+            # Keep four outputs for checkpoint compatibility with the
+            # independent-knot gauge; the concave map below combines them into
+            # an intercept, slope, and non-negative curvature.
+            4,
         ]
         layers: list[torch.nn.Module] = []
         for ii in range(len(dims) - 1):
@@ -645,10 +648,11 @@ class FreeEnergyFittingNet(Fitting):
                 # The global phase correction is concave in temperature, as
                 # required by d2G/dT2 = -Cp/T <= 0 for positive heat capacity.
                 curvature = torch.nn.functional.softplus(phase_gauge[:, 2:3])
+                slope = phase_gauge[:, 1:2] + phase_gauge[:, 3:4]
                 phase_gauge = torch.cat(
                     [
                         phase_gauge[:, 0:1]
-                        + phase_gauge[:, 1:2]
+                        + slope
                         * (torch.full_like(full_state[:, :1], knot)
                            / self.temperature_scale)
                         - curvature
