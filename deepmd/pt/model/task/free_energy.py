@@ -619,11 +619,15 @@ class FreeEnergyFittingNet(Fitting):
                 "concave",
                 "entropy_affine",
                 "concave_entropy",
+                "polynomial",
+                "tlog_polynomial",
             )
         for param in self.curvature_correction.parameters():
             param.requires_grad = self.trainable and self.temperature_basis in (
                 "concave",
                 "concave_log",
+                "polynomial",
+                "tlog_polynomial",
             )
         for param in self.fparam_network.parameters():
             param.requires_grad = self.trainable
@@ -1159,7 +1163,7 @@ class FreeEnergyFittingNet(Fitting):
         single frozen reference potential across branches.
         """
         self.correction.set_case_embd(case_idx)
-        if self.temperature_basis == "piecewise_linear" or self.phase_gauge_neuron:
+        if self.temperature_basis in ("piecewise_linear", "polynomial", "tlog_polynomial") or self.phase_gauge_neuron:
             self.knot_correction_1.set_case_embd(case_idx)
             self.knot_correction_2.set_case_embd(case_idx)
             self.knot_correction_3.set_case_embd(case_idx)
@@ -1169,9 +1173,11 @@ class FreeEnergyFittingNet(Fitting):
             "concave_log",
             "entropy_affine",
             "concave_entropy",
+            "polynomial",
+            "tlog_polynomial",
         ):
             self.slope_correction.set_case_embd(case_idx)
-        if self.temperature_basis in ("concave", "concave_log", "concave_entropy"):
+        if self.temperature_basis in ("concave", "concave_log", "concave_entropy", "polynomial", "tlog_polynomial"):
             self.curvature_correction.set_case_embd(case_idx)
 
     def compute_input_stats(
@@ -1194,6 +1200,8 @@ class FreeEnergyFittingNet(Fitting):
             "concave_log",
             "entropy_affine",
             "concave_entropy",
+            "polynomial",
+            "tlog_polynomial",
             "piecewise_linear",
         ):
             def reduce_samples(samples: list[dict]) -> list[dict]:
