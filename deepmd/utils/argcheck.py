@@ -3096,6 +3096,16 @@ def fitting_fes() -> list[Argument]:
             doc="Unit scale for the positive curvature coefficient in the concave basis.",
         ),
         Argument(
+            "concavity_mix",
+            [float, int],
+            optional=True,
+            default=0.05,
+            doc=(
+                "For the concave_residual phase gauge, the fraction of the "
+                "bounded concave curve mixed into the unrestricted knot curve."
+            ),
+        ),
+        Argument(
             "temperature_knots",
             list[float],
             optional=True,
@@ -3130,7 +3140,8 @@ def fitting_fes() -> list[Argument]:
             default="piecewise_linear",
             doc=(
                 "Temperature basis for the global phase gauge: independent "
-                "piecewise-linear knot offsets or a concave thermodynamic basis."
+                "piecewise-linear knot offsets, a hard concave basis, or a "
+                "bounded concave residual basis."
             ),
         ),
         Argument(

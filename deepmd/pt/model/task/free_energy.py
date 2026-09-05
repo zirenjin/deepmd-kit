@@ -149,6 +149,7 @@ class FreeEnergyFittingNet(Fitting):
         temperature_basis: str = "mlp",
         temperature_scale: float = 1000.0,
         curvature_scale: float = 1.0e-2,
+        concavity_mix: float = 0.05,
         temperature_knots: list[float] | None = None,
         phase_gauge_neuron: list[int] | None = None,
         phase_gauge_pooling: str = "mean",
@@ -204,9 +205,12 @@ class FreeEnergyFittingNet(Fitting):
             raise ValueError("temperature_scale must be positive")
         if curvature_scale <= 0.0:
             raise ValueError("curvature_scale must be positive")
+        if not 0.0 <= concavity_mix <= 1.0:
+            raise ValueError("concavity_mix must be between zero and one")
         self.temperature_basis = temperature_basis
         self.temperature_scale = float(temperature_scale)
         self.curvature_scale = float(curvature_scale)
+        self.concavity_mix = float(concavity_mix)
         self.temperature_knots = list(
             temperature_knots or [1000.0, 1200.0, 1900.0, 2200.0]
         )
@@ -229,9 +233,14 @@ class FreeEnergyFittingNet(Fitting):
                 "or 'mean_std_max', 'type_mean', or 'deep_mean'"
             )
         self.phase_gauge_pooling = phase_gauge_pooling
-        if phase_gauge_basis not in ("piecewise_linear", "concave"):
+        if phase_gauge_basis not in (
+            "piecewise_linear",
+            "concave",
+            "concave_residual",
+        ):
             raise ValueError(
-                "phase_gauge_basis must be 'piecewise_linear' or 'concave'"
+                "phase_gauge_basis must be 'piecewise_linear', 'concave', "
+                "or 'concave_residual'"
             )
         self.phase_gauge_basis = phase_gauge_basis
         self.phase_gauge_only = bool(phase_gauge_only)
@@ -748,12 +757,12 @@ class FreeEnergyFittingNet(Fitting):
             phase_gauge = self.phase_gauge_network(
                 gauge_input
             )
-            if self.phase_gauge_basis == "concave":
+            if self.phase_gauge_basis in ("concave", "concave_residual"):
                 # The global phase correction is concave in temperature, as
                 # required by d2G/dT2 = -Cp/T <= 0 for positive heat capacity.
                 curvature = torch.nn.functional.softplus(phase_gauge[:, 2:3])
                 slope = phase_gauge[:, 1:2] + phase_gauge[:, 3:4]
-                phase_gauge = torch.cat(
+                concave_gauge = torch.cat(
                     [
                         phase_gauge[:, 0:1]
                         + slope
@@ -766,6 +775,16 @@ class FreeEnergyFittingNet(Fitting):
                     ],
                     dim=1,
                 )
+                if self.phase_gauge_basis == "concave":
+                    phase_gauge = concave_gauge
+                else:
+                    # Retain the unrestricted piecewise curve and apply only
+                    # a bounded thermodynamic curvature residual. This keeps
+                    # all four knot degrees of freedom available when labels
+                    # are sparse, unlike the hard concave parameterization.
+                    phase_gauge = phase_gauge + self.concavity_mix * (
+                        concave_gauge - phase_gauge
+                    )
         if self.temperature_basis == "piecewise_linear":
             if self.phase_gauge_only:
                 knot_1 = torch.zeros_like(correction)
