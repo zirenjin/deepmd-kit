@@ -182,10 +182,11 @@ class FreeEnergyFittingNet(Fitting):
             "linear_zero_anchor",
             "affine",
             "concave",
+            "concave_log",
         ):
             raise ValueError(
                 "temperature_basis must be 'mlp', 'linear_zero_anchor', 'affine', "
-                "or 'concave'"
+                "or 'concave' or 'concave_log'"
             )
         if temperature_scale <= 0.0:
             raise ValueError("temperature_scale must be positive")
@@ -227,7 +228,12 @@ class FreeEnergyFittingNet(Fitting):
             self.use_composition,
         )
         self.correction_state_dim = self.state_dim
-        if self.temperature_basis in ("linear_zero_anchor", "affine", "concave"):
+        if self.temperature_basis in (
+            "linear_zero_anchor",
+            "affine",
+            "concave",
+            "concave_log",
+        ):
             if self.numb_state_fparam < 1:
                 raise ValueError(
                     "linear_zero_anchor requires temperature in fparam[:, 0]"
@@ -281,7 +287,7 @@ class FreeEnergyFittingNet(Fitting):
         # unrestricted FES behaviour without optional-module TorchScript state.
         slope_neuron = (
             self.neuron
-            if self.temperature_basis in ("affine", "concave")
+            if self.temperature_basis in ("affine", "concave", "concave_log")
             else [1]
         )
         self.slope_correction = InvarFitting(
@@ -300,13 +306,18 @@ class FreeEnergyFittingNet(Fitting):
             seed=seed,
             exclude_types=self.exclude_types,
             type_map=self.type_map,
-            trainable=trainable and self.temperature_basis in ("affine", "concave"),
+            trainable=trainable
+            and self.temperature_basis in ("affine", "concave", "concave_log"),
         )
 
         # A positive curvature coefficient gives a thermodynamically concave
         # free-energy curve: d2G/dT2 = -2*c / temperature_scale**2 <= 0,
         # consistent with non-negative heat capacity at fixed pressure.
-        curvature_neuron = self.neuron if self.temperature_basis == "concave" else [1]
+        curvature_neuron = (
+            self.neuron
+            if self.temperature_basis in ("concave", "concave_log")
+            else [1]
+        )
         self.curvature_correction = InvarFitting(
             var_name="fes_curvature",
             ntypes=ntypes,
@@ -323,7 +334,8 @@ class FreeEnergyFittingNet(Fitting):
             seed=seed,
             exclude_types=self.exclude_types,
             type_map=self.type_map,
-            trainable=trainable and self.temperature_basis == "concave",
+            trainable=trainable
+            and self.temperature_basis in ("concave", "concave_log"),
         )
 
         self.fparam_network = self._build_fparam_network(seed)
@@ -371,7 +383,10 @@ class FreeEnergyFittingNet(Fitting):
                 "concave",
             )
         for param in self.curvature_correction.parameters():
-            param.requires_grad = self.trainable and self.temperature_basis == "concave"
+            param.requires_grad = self.trainable and self.temperature_basis in (
+                "concave",
+                "concave_log",
+            )
         for param in self.fparam_network.parameters():
             param.requires_grad = self.trainable
 
@@ -401,7 +416,12 @@ class FreeEnergyFittingNet(Fitting):
             raise ValueError("the FES head requires a state vector in fparam")
         full_state = fparam.reshape(descriptor.shape[0], self.state_dim).to(self.prec)
         correction_fparam = full_state
-        if self.temperature_basis in ("linear_zero_anchor", "affine", "concave"):
+        if self.temperature_basis in (
+            "linear_zero_anchor",
+            "affine",
+            "concave",
+            "concave_log",
+        ):
             temperature_scale = full_state[:, :1] / self.temperature_scale
             correction_fparam = full_state[:, 1:]
         if self.fparam_neuron:
@@ -471,6 +491,28 @@ class FreeEnergyFittingNet(Fitting):
                 * curvature
                 * temperature_scale.unsqueeze(1).square()
             )
+        elif self.temperature_basis == "concave_log":
+            slope = self.slope_correction(
+                corr_descriptor,
+                atype,
+                gr,
+                g2,
+                h2,
+                correction_fparam,
+                aparam,
+            )["fes_slope"]
+            raw_curvature = self.curvature_correction(
+                corr_descriptor,
+                atype,
+                gr,
+                g2,
+                h2,
+                correction_fparam,
+                aparam,
+            )["fes_curvature"]
+            curvature = torch.nn.functional.softplus(raw_curvature)
+            x = temperature_scale.unsqueeze(1)
+            correction = correction + slope * x - self.curvature_scale * curvature * x * torch.log(x)
 
         return {
             "fes_baseline": baseline,
@@ -584,9 +626,9 @@ class FreeEnergyFittingNet(Fitting):
         single frozen reference potential across branches.
         """
         self.correction.set_case_embd(case_idx)
-        if self.temperature_basis in ("affine", "concave"):
+        if self.temperature_basis in ("affine", "concave", "concave_log"):
             self.slope_correction.set_case_embd(case_idx)
-        if self.temperature_basis == "concave":
+        if self.temperature_basis in ("concave", "concave_log"):
             self.curvature_correction.set_case_embd(case_idx)
 
     def compute_input_stats(
@@ -602,7 +644,12 @@ class FreeEnergyFittingNet(Fitting):
         the statistics are taken over ``[T, P, v, c]`` rather than the two raw
         columns found in ``fparam.npy``.
         """
-        if self.temperature_basis in ("linear_zero_anchor", "affine", "concave"):
+        if self.temperature_basis in (
+            "linear_zero_anchor",
+            "affine",
+            "concave",
+            "concave_log",
+        ):
             if callable(merged):
                 samples = merged()
             else:
@@ -617,7 +664,7 @@ class FreeEnergyFittingNet(Fitting):
                 self.slope_correction.compute_input_stats(
                     reduced, protection, stat_file_path
                 )
-            if self.temperature_basis == "concave":
+            if self.temperature_basis in ("concave", "concave_log"):
                 self.slope_correction.compute_input_stats(
                     reduced, protection, stat_file_path
                 )

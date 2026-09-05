@@ -2998,7 +2998,8 @@ def fitting_fes() -> list[Argument]:
         "conditioned head; `linear_zero_anchor` models delta G as T times a "
         "learned entropy-like coefficient and therefore vanishes at T=0; "
         "`affine` learns independent intercept and temperature-slope terms; "
-        "`concave` additionally enforces non-positive temperature curvature."
+        "`concave` additionally enforces non-positive temperature curvature; "
+        "`concave_log` uses a thermodynamic -T log(T) curvature basis."
     )
     doc_fparam_neuron = (
         "Hidden sizes of the state-vector encoder, whose output is concatenated "
