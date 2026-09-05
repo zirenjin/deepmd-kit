@@ -286,7 +286,8 @@ class DescrptBlockRepflows(DescriptorBlock):
 
         # order matters, placed after the assignment of self.ntypes
         self.reinit_exclude(exclude_types)
-        self.env_protection = env_protection
+        # Keep TorchScript call sites typed as float when JSON supplies 0.
+        self.env_protection = float(env_protection)
         self.precision = precision
         self.epsilon = 1e-4
         self.seed = seed
