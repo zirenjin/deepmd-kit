@@ -3104,6 +3104,17 @@ def fitting_fes() -> list[Argument]:
             ),
         ),
         Argument(
+            "center_local_correction",
+            bool,
+            optional=True,
+            default=False,
+            doc=(
+                "Whether to project the local atomic correction to zero "
+                "structure mean. Requires phase_gauge_neuron so the global "
+                "head carries the total thermodynamic correction."
+            ),
+        ),
+        Argument(
             "fparam_neuron",
             list[int],
             optional=True,

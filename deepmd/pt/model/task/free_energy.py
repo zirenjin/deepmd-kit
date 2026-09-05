@@ -150,6 +150,7 @@ class FreeEnergyFittingNet(Fitting):
         curvature_scale: float = 1.0e-2,
         temperature_knots: list[float] | None = None,
         phase_gauge_neuron: list[int] | None = None,
+        center_local_correction: bool = False,
         neuron: list[int] | None = None,
         fparam_neuron: list[int] | None = None,
         resnet_dt: bool = True,
@@ -214,6 +215,11 @@ class FreeEnergyFittingNet(Fitting):
             raise ValueError(
                 "phase_gauge_neuron currently requires temperature_basis="
                 "'piecewise_linear'"
+            )
+        self.center_local_correction = bool(center_local_correction)
+        if self.center_local_correction and not self.phase_gauge_neuron:
+            raise ValueError(
+                "center_local_correction requires phase_gauge_neuron"
             )
         self.neuron = list(neuron or [128, 128, 128])
         self.fparam_neuron = list(fparam_neuron if fparam_neuron is not None else [])
@@ -492,6 +498,15 @@ class FreeEnergyFittingNet(Fitting):
                 layers.append(_activation(self.activation_function))
         return torch.nn.Sequential(*layers).to(env.DEVICE)
 
+    def _center_local_correction(
+        self, value: torch.Tensor, atype: torch.Tensor
+    ) -> torch.Tensor:
+        """Remove the structure mean so only the global head carries G."""
+        atom_mask = (atype >= 0).to(value.dtype)
+        atom_count = torch.clamp(torch.sum(atom_mask, dim=1), min=1.0)
+        mean = torch.sum(value[:, :, 0] * atom_mask, dim=1) / atom_count
+        return value - mean.unsqueeze(1).unsqueeze(2)
+
     def _set_trainable(self) -> None:
         for param in self.baseline.parameters():
             param.requires_grad = not self.freeze_baseline
@@ -612,6 +627,11 @@ class FreeEnergyFittingNet(Fitting):
             knot_3 = self.knot_correction_3(
                 corr_descriptor, atype, gr, g2, h2, correction_fparam, aparam
             )["fes_knot_3"]
+            if self.center_local_correction:
+                correction = self._center_local_correction(correction, atype)
+                knot_1 = self._center_local_correction(knot_1, atype)
+                knot_2 = self._center_local_correction(knot_2, atype)
+                knot_3 = self._center_local_correction(knot_3, atype)
             if self.phase_gauge_neuron:
                 atom_count = torch.clamp(
                     torch.sum((atype >= 0).to(correction.dtype), dim=1), min=1.0
@@ -966,6 +986,7 @@ class FreeEnergyFittingNet(Fitting):
             "curvature_scale": self.curvature_scale,
             "temperature_knots": self.temperature_knots,
             "phase_gauge_neuron": self.phase_gauge_neuron,
+            "center_local_correction": self.center_local_correction,
             "neuron": self.neuron,
             "fparam_neuron": self.fparam_neuron,
             "resnet_dt": self.resnet_dt,
