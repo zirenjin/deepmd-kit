@@ -214,9 +214,15 @@ class FreeEnergyFittingNet(Fitting):
         ):
             raise ValueError("temperature_knots must contain four increasing values")
         self.phase_gauge_neuron = list(phase_gauge_neuron or [])
-        if phase_gauge_pooling not in ("mean", "mean_max", "mean_std_max"):
+        if phase_gauge_pooling not in (
+            "mean",
+            "mean_max",
+            "mean_std",
+            "mean_std_max",
+        ):
             raise ValueError(
-                "phase_gauge_pooling must be 'mean', 'mean_max', or 'mean_std_max'"
+                "phase_gauge_pooling must be 'mean', 'mean_max', 'mean_std', "
+                "or 'mean_std_max'"
             )
         self.phase_gauge_pooling = phase_gauge_pooling
         if phase_gauge_basis not in ("piecewise_linear", "concave"):
@@ -503,7 +509,7 @@ class FreeEnergyFittingNet(Fitting):
                 3
                 if self.phase_gauge_pooling == "mean_std_max"
                 else 2
-                if self.phase_gauge_pooling == "mean_max"
+                if self.phase_gauge_pooling in ("mean_max", "mean_std")
                 else 1
             )
             + self.correction_state_dim,
@@ -649,6 +655,15 @@ class FreeEnergyFittingNet(Fitting):
                 )
                 pooled_descriptor = torch.cat(
                     [pooled_descriptor, torch.max(masked_descriptor, dim=1).values],
+                    dim=-1,
+                )
+            elif self.phase_gauge_pooling == "mean_std":
+                centered = descriptor.to(self.prec) - pooled_descriptor.unsqueeze(1)
+                variance = torch.sum(
+                    centered * centered * atom_mask.unsqueeze(-1), dim=1
+                ) / atom_count.unsqueeze(-1)
+                pooled_descriptor = torch.cat(
+                    [pooled_descriptor, torch.sqrt(torch.clamp(variance, min=1.0e-12))],
                     dim=-1,
                 )
             elif self.phase_gauge_pooling == "mean_std_max":
