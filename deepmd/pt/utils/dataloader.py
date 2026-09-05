@@ -333,6 +333,19 @@ class PairedDpLoaderSet(Dataset):
         self.nframes = len(self.systems[0])
         self.max_natoms = max(item._natoms for item in self.systems)
         self.nphases = len(self.systems)
+        # Statistics collection uses the same per-system dataloader contract
+        # as DpLoaderSet, while training itself consumes synchronized batches
+        # through __getitem__ below.
+        self.dataloaders = [
+            DataLoader(
+                dataset=system,
+                batch_size=self.batch_size,
+                num_workers=0,
+                collate_fn=collate_batch,
+                shuffle=False,
+            )
+            for system in self.systems
+        ]
         self.index = [max(1, int(np.ceil(self.nframes / self.batch_size)))]
         self.total_batch = self.index[0]
         self._counter = 0
