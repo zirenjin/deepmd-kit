@@ -3111,6 +3111,16 @@ def fitting_fes() -> list[Argument]:
             doc="Invariant pooling for the phase gauge: `mean` or `mean_max`.",
         ),
         Argument(
+            "phase_gauge_basis",
+            str,
+            optional=True,
+            default="piecewise_linear",
+            doc=(
+                "Temperature basis for the global phase gauge: independent "
+                "piecewise-linear knot offsets or a concave thermodynamic basis."
+            ),
+        ),
+        Argument(
             "center_local_correction",
             bool,
             optional=True,

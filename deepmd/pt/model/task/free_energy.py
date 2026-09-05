@@ -151,6 +151,7 @@ class FreeEnergyFittingNet(Fitting):
         temperature_knots: list[float] | None = None,
         phase_gauge_neuron: list[int] | None = None,
         phase_gauge_pooling: str = "mean",
+        phase_gauge_basis: str = "piecewise_linear",
         center_local_correction: bool = False,
         neuron: list[int] | None = None,
         fparam_neuron: list[int] | None = None,
@@ -215,6 +216,11 @@ class FreeEnergyFittingNet(Fitting):
         if phase_gauge_pooling not in ("mean", "mean_max"):
             raise ValueError("phase_gauge_pooling must be 'mean' or 'mean_max'")
         self.phase_gauge_pooling = phase_gauge_pooling
+        if phase_gauge_basis not in ("piecewise_linear", "concave"):
+            raise ValueError(
+                "phase_gauge_basis must be 'piecewise_linear' or 'concave'"
+            )
+        self.phase_gauge_basis = phase_gauge_basis
         if self.phase_gauge_neuron and self.temperature_basis != "piecewise_linear":
             raise ValueError(
                 "phase_gauge_neuron currently requires temperature_basis="
@@ -487,7 +493,7 @@ class FreeEnergyFittingNet(Fitting):
             self.dim_descrpt * (2 if self.phase_gauge_pooling == "mean_max" else 1)
             + self.correction_state_dim,
             *self.phase_gauge_neuron,
-            4,
+            3 if self.phase_gauge_basis == "concave" else 4,
         ]
         layers: list[torch.nn.Module] = []
         for ii in range(len(dims) - 1):
@@ -635,6 +641,23 @@ class FreeEnergyFittingNet(Fitting):
             phase_gauge = self.phase_gauge_network(
                 gauge_input
             )
+            if self.phase_gauge_basis == "concave":
+                # The global phase correction is concave in temperature, as
+                # required by d2G/dT2 = -Cp/T <= 0 for positive heat capacity.
+                curvature = torch.nn.functional.softplus(phase_gauge[:, 2:3])
+                phase_gauge = torch.cat(
+                    [
+                        phase_gauge[:, 0:1]
+                        + phase_gauge[:, 1:2]
+                        * (torch.full_like(full_state[:, :1], knot)
+                           / self.temperature_scale)
+                        - curvature
+                        * (torch.full_like(full_state[:, :1], knot)
+                           / self.temperature_scale) ** 2
+                        for knot in self.temperature_knots
+                    ],
+                    dim=1,
+                )
         if self.temperature_basis == "piecewise_linear":
             knot_1 = self.knot_correction_1(
                 corr_descriptor, atype, gr, g2, h2, correction_fparam, aparam
@@ -1005,6 +1028,7 @@ class FreeEnergyFittingNet(Fitting):
             "temperature_knots": self.temperature_knots,
             "phase_gauge_neuron": self.phase_gauge_neuron,
             "phase_gauge_pooling": self.phase_gauge_pooling,
+            "phase_gauge_basis": self.phase_gauge_basis,
             "center_local_correction": self.center_local_correction,
             "neuron": self.neuron,
             "fparam_neuron": self.fparam_neuron,
