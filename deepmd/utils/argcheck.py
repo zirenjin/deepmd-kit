@@ -2993,6 +2993,11 @@ def fitting_fes() -> list[Argument]:
     doc_use_composition = (
         "Whether to append the per-type composition fractions to the state vector."
     )
+    doc_temperature_basis = (
+        "Temperature dependence of the correction. `mlp` is the unrestricted "
+        "conditioned head; `linear_zero_anchor` models delta G as T times a "
+        "learned entropy-like coefficient and therefore vanishes at T=0."
+    )
     doc_fparam_neuron = (
         "Hidden sizes of the state-vector encoder, whose output is concatenated "
         "to the descriptor. Without it a handful of thermodynamic variables are "
@@ -3052,6 +3057,20 @@ def fitting_fes() -> list[Argument]:
             optional=True,
             default=True,
             doc=doc_use_composition,
+        ),
+        Argument(
+            "temperature_basis",
+            str,
+            optional=True,
+            default="mlp",
+            doc=doc_temperature_basis,
+        ),
+        Argument(
+            "temperature_scale",
+            [float, int],
+            optional=True,
+            default=1000.0,
+            doc="Scale in kelvin for the linear-zero-anchor temperature basis.",
         ),
         Argument(
             "fparam_neuron",

@@ -145,6 +145,8 @@ class FreeEnergyFittingNet(Fitting):
         numb_state_fparam: int = 2,
         volume_mode: str = "per_atom",
         use_composition: bool = True,
+        temperature_basis: str = "mlp",
+        temperature_scale: float = 1000.0,
         neuron: list[int] | None = None,
         fparam_neuron: list[int] | None = None,
         resnet_dt: bool = True,
@@ -174,6 +176,14 @@ class FreeEnergyFittingNet(Fitting):
         self.numb_state_fparam = int(numb_state_fparam)
         self.volume_mode = volume_mode
         self.use_composition = bool(use_composition)
+        if temperature_basis not in ("mlp", "linear_zero_anchor"):
+            raise ValueError(
+                "temperature_basis must be 'mlp' or 'linear_zero_anchor'"
+            )
+        if temperature_scale <= 0.0:
+            raise ValueError("temperature_scale must be positive")
+        self.temperature_basis = temperature_basis
+        self.temperature_scale = float(temperature_scale)
         self.neuron = list(neuron or [128, 128, 128])
         self.fparam_neuron = list(fparam_neuron if fparam_neuron is not None else [])
         self.resnet_dt = resnet_dt
@@ -206,6 +216,13 @@ class FreeEnergyFittingNet(Fitting):
             self.volume_mode,
             self.use_composition,
         )
+        self.correction_state_dim = self.state_dim
+        if self.temperature_basis == "linear_zero_anchor":
+            if self.numb_state_fparam < 1:
+                raise ValueError(
+                    "linear_zero_anchor requires temperature in fparam[:, 0]"
+                )
+            self.correction_state_dim -= 1
 
         baseline_cfg = dict(baseline or {})
         for forbidden in ("numb_fparam", "numb_aparam"):
@@ -238,7 +255,7 @@ class FreeEnergyFittingNet(Fitting):
             dim_out=1,
             neuron=self.neuron,
             resnet_dt=resnet_dt,
-            numb_fparam=self.state_dim,
+            numb_fparam=self.correction_state_dim,
             numb_aparam=0,
             dim_case_embd=self.dim_case_embd,
             activation_function=activation_function,
@@ -255,12 +272,12 @@ class FreeEnergyFittingNet(Fitting):
         self._set_trainable()
 
     def _build_fparam_network(self, seed: int | list[int] | None) -> torch.nn.Module:
-        """State-vector encoder: state_dim -> fparam_neuron[-1]."""
+        """State-vector encoder for the correction conditioning variables."""
         if not self.fparam_neuron:
             return torch.nn.Identity()
 
         def build() -> list[torch.nn.Module]:
-            dims = [self.state_dim, *self.fparam_neuron]
+            dims = [self.correction_state_dim, *self.fparam_neuron]
             layers: list[torch.nn.Module] = []
             for ii in range(len(dims) - 1):
                 layers.append(
@@ -311,12 +328,27 @@ class FreeEnergyFittingNet(Fitting):
         baseline = self.baseline(descriptor, atype, gr, g2, h2, None, None)["energy"]
 
         corr_descriptor = descriptor
+        temperature_scale = torch.ones(
+            (descriptor.shape[0], 1), dtype=descriptor.dtype, device=descriptor.device
+        )
+        correction_fparam = fparam
+        if self.temperature_basis == "linear_zero_anchor":
+            if fparam is None:
+                raise ValueError("the FES head requires a state vector in fparam")
+            full_state = fparam.reshape(descriptor.shape[0], self.state_dim).to(
+                self.prec
+            )
+            temperature_scale = full_state[:, :1] / self.temperature_scale
+            correction_fparam = full_state[:, 1:]
         if self.fparam_neuron:
             if fparam is None:
                 raise ValueError(
                     "the FES head requires a state vector in fparam; got None."
                 )
-            state = fparam.reshape(descriptor.shape[0], self.state_dim).to(self.prec)
+            state = correction_fparam.reshape(
+                descriptor.shape[0], self.correction_state_dim
+            ).to(self.prec)
+            if self.temperature_basis == "linear_zero_anchor":
             # Reuse the correction net's fparam statistics so the encoder and
             # the raw concatenation path see the identically normalized vector.
             avg = self.correction.fparam_avg
@@ -331,8 +363,16 @@ class FreeEnergyFittingNet(Fitting):
         # module-level strings.  ``test_fes_output_names`` pins them to
         # BASELINE_NAME/CORRECTION_NAME so the two cannot drift apart.
         correction = self.correction(
-            corr_descriptor, atype, gr, g2, h2, fparam, aparam
+            corr_descriptor,
+            atype,
+            gr,
+            g2,
+            h2,
+            correction_fparam,
+            aparam,
         )["fes_correction"]
+        if self.temperature_basis == "linear_zero_anchor":
+            correction = correction * temperature_scale.unsqueeze(1)
 
         return {
             "fes_baseline": baseline,
@@ -458,7 +498,19 @@ class FreeEnergyFittingNet(Fitting):
         the statistics are taken over ``[T, P, v, c]`` rather than the two raw
         columns found in ``fparam.npy``.
         """
-        self.correction.compute_input_stats(merged, protection, stat_file_path)
+        if self.temperature_basis == "linear_zero_anchor":
+            if callable(merged):
+                samples = merged()
+            else:
+                samples = merged
+            reduced = []
+            for sample in samples:
+                item = dict(sample)
+                item["fparam"] = sample["fparam"][..., 1:]
+                reduced.append(item)
+            self.correction.compute_input_stats(reduced, protection, stat_file_path)
+        else:
+            self.correction.compute_input_stats(merged, protection, stat_file_path)
 
     # --- (de)serialization ---------------------------------------------
 
@@ -481,6 +533,8 @@ class FreeEnergyFittingNet(Fitting):
             "numb_state_fparam": self.numb_state_fparam,
             "volume_mode": self.volume_mode,
             "use_composition": self.use_composition,
+            "temperature_basis": self.temperature_basis,
+            "temperature_scale": self.temperature_scale,
             "neuron": self.neuron,
             "fparam_neuron": self.fparam_neuron,
             "resnet_dt": self.resnet_dt,
