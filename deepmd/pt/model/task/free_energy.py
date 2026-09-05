@@ -249,11 +249,6 @@ class FreeEnergyFittingNet(Fitting):
             raise ValueError("phase_gauge_only requires phase_gauge_neuron")
         if self.phase_gauge_only and self.temperature_basis != "piecewise_linear":
             raise ValueError("phase_gauge_only requires temperature_basis='piecewise_linear'")
-        if self.phase_gauge_neuron and self.temperature_basis != "piecewise_linear":
-            raise ValueError(
-                "phase_gauge_neuron currently requires temperature_basis="
-                "'piecewise_linear'"
-            )
         self.center_local_correction = bool(center_local_correction)
         if self.center_local_correction and not self.phase_gauge_neuron:
             raise ValueError(
@@ -830,6 +825,25 @@ class FreeEnergyFittingNet(Fitting):
                 phase_gauge = phase_gauge + self.concavity_mix * gate * (
                     concave_gauge - phase_gauge
                 )
+        continuous_phase_gauge = torch.zeros(
+            (descriptor.shape[0], 1), dtype=correction.dtype, device=descriptor.device
+        )
+        if self.phase_gauge_neuron and self.temperature_basis != "piecewise_linear":
+            x = temperature_scale
+            intercept = phase_gauge[:, 0:1]
+            slope = phase_gauge[:, 1:2]
+            curvature = torch.nn.functional.softplus(phase_gauge[:, 2:3])
+            entropy = torch.nn.functional.softplus(phase_gauge[:, 3:4])
+            if self.temperature_basis == "affine":
+                continuous_phase_gauge = intercept + slope * x
+            elif self.temperature_basis == "concave":
+                continuous_phase_gauge = intercept + slope * x - self.curvature_scale * curvature * x.square()
+            elif self.temperature_basis == "concave_log":
+                continuous_phase_gauge = intercept + slope * x - self.curvature_scale * curvature * x * torch.log(x)
+            elif self.temperature_basis == "entropy_affine":
+                continuous_phase_gauge = intercept - entropy * x
+            elif self.temperature_basis == "concave_entropy":
+                continuous_phase_gauge = intercept - entropy * x - self.curvature_scale * curvature * x.square()
         if self.temperature_basis == "piecewise_linear":
             if self.phase_gauge_only:
                 knot_1 = torch.zeros_like(correction)
@@ -984,6 +998,12 @@ class FreeEnergyFittingNet(Fitting):
                 * x.square()
             )
 
+        if self.phase_gauge_neuron and self.temperature_basis != "piecewise_linear":
+            atom_count = torch.clamp(
+                torch.sum((atype >= 0).to(correction.dtype), dim=1), min=1.0
+            ).reshape(-1, 1, 1)
+            correction = correction + continuous_phase_gauge.unsqueeze(1) / atom_count
+
         return {
             "fes_baseline": baseline,
             "fes_correction": correction,
@@ -1099,7 +1119,7 @@ class FreeEnergyFittingNet(Fitting):
         single frozen reference potential across branches.
         """
         self.correction.set_case_embd(case_idx)
-        if self.temperature_basis == "piecewise_linear":
+        if self.temperature_basis == "piecewise_linear" or self.phase_gauge_neuron:
             self.knot_correction_1.set_case_embd(case_idx)
             self.knot_correction_2.set_case_embd(case_idx)
             self.knot_correction_3.set_case_embd(case_idx)
