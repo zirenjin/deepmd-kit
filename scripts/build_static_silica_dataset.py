@@ -76,7 +76,10 @@ def main() -> None:
             stop = min(start + args.set_size, len(temperatures))
             set_dir = phase_dir / f"set.{start // args.set_size:03d}"
             set_dir.mkdir()
-            np.save(set_dir / "coord.npy", np.repeat(coords[None, :, :], stop - start, axis=0))
+            np.save(
+                set_dir / "coord.npy",
+                np.repeat(coords.reshape(1, -1), stop - start, axis=0),
+            )
             np.save(set_dir / "box.npy", np.repeat(box.reshape(1, 9), stop - start, axis=0))
             np.save(
                 set_dir / "fparam.npy",
