@@ -35,3 +35,18 @@ Artifacts:
 - checkpoint: `/GenSIvePFS/users/zirenj/fes_experiment_pbe_d3bj/fes_static_only_4phase_extensive_a100/model.ckpt-3000.pt`
 - frozen model: `/GenSIvePFS/users/zirenj/fes_experiment_pbe_d3bj/fes_static_only_4phase_extensive_a100/fes_static_only_4phase_extensive.pth`
 - metrics: `/GenSIvePFS/users/zirenj/fes_experiment_pbe_d3bj/fes_static_only_4phase_extensive_a100/all_pair_metrics.json`
+
+## Gauge-reference sanity check
+
+The same configuration was retrained with cristobalite listed first, keeping
+the architecture, seed, labels, optimizer, and structures unchanged. The
+full-range ranking accuracy was 57.4% versus 42.3% with quartz first. Pairwise
+MAE remained in the same order (`0.00066-0.00424 eV/atom` for the cristobalite
+gauge, excluding no pair), and cycle inconsistency remained zero. Crossing
+locations are still unstable, so this run validates gauge invariance of the
+scalar construction but does not rescue the current static representatives.
+
+Gauge-sanity metrics:
+
+- model: `/GenSIvePFS/users/zirenj/fes_experiment_pbe_d3bj/fes_static_only_4phase_extensive_gauge_c_a100/fes_static_only_4phase_extensive_gauge_c.pth`
+- metrics: `/GenSIvePFS/users/zirenj/fes_experiment_pbe_d3bj/fes_static_only_4phase_extensive_gauge_c_a100/all_pair_metrics.json`
