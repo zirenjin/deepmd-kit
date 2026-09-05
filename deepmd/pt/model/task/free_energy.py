@@ -147,6 +147,7 @@ class FreeEnergyFittingNet(Fitting):
         use_composition: bool = True,
         temperature_basis: str = "mlp",
         temperature_scale: float = 1000.0,
+        curvature_scale: float = 1.0e-2,
         neuron: list[int] | None = None,
         fparam_neuron: list[int] | None = None,
         resnet_dt: bool = True,
@@ -176,14 +177,23 @@ class FreeEnergyFittingNet(Fitting):
         self.numb_state_fparam = int(numb_state_fparam)
         self.volume_mode = volume_mode
         self.use_composition = bool(use_composition)
-        if temperature_basis not in ("mlp", "linear_zero_anchor", "affine"):
+        if temperature_basis not in (
+            "mlp",
+            "linear_zero_anchor",
+            "affine",
+            "concave",
+        ):
             raise ValueError(
-                "temperature_basis must be 'mlp', 'linear_zero_anchor', or 'affine'"
+                "temperature_basis must be 'mlp', 'linear_zero_anchor', 'affine', "
+                "or 'concave'"
             )
         if temperature_scale <= 0.0:
             raise ValueError("temperature_scale must be positive")
+        if curvature_scale <= 0.0:
+            raise ValueError("curvature_scale must be positive")
         self.temperature_basis = temperature_basis
         self.temperature_scale = float(temperature_scale)
+        self.curvature_scale = float(curvature_scale)
         self.neuron = list(neuron or [128, 128, 128])
         self.fparam_neuron = list(fparam_neuron if fparam_neuron is not None else [])
         self.resnet_dt = resnet_dt
@@ -217,7 +227,7 @@ class FreeEnergyFittingNet(Fitting):
             self.use_composition,
         )
         self.correction_state_dim = self.state_dim
-        if self.temperature_basis in ("linear_zero_anchor", "affine"):
+        if self.temperature_basis in ("linear_zero_anchor", "affine", "concave"):
             if self.numb_state_fparam < 1:
                 raise ValueError(
                     "linear_zero_anchor requires temperature in fparam[:, 0]"
@@ -269,7 +279,11 @@ class FreeEnergyFittingNet(Fitting):
         # Keep the optional slope module present in every scripted instance;
         # use a tiny inactive net outside affine mode to preserve the default
         # unrestricted FES behaviour without optional-module TorchScript state.
-        slope_neuron = self.neuron if self.temperature_basis == "affine" else [1]
+        slope_neuron = (
+            self.neuron
+            if self.temperature_basis in ("affine", "concave")
+            else [1]
+        )
         self.slope_correction = InvarFitting(
             var_name="fes_slope",
             ntypes=ntypes,
@@ -286,7 +300,30 @@ class FreeEnergyFittingNet(Fitting):
             seed=seed,
             exclude_types=self.exclude_types,
             type_map=self.type_map,
-            trainable=trainable and self.temperature_basis == "affine",
+            trainable=trainable and self.temperature_basis in ("affine", "concave"),
+        )
+
+        # A positive curvature coefficient gives a thermodynamically concave
+        # free-energy curve: d2G/dT2 = -2*c / temperature_scale**2 <= 0,
+        # consistent with non-negative heat capacity at fixed pressure.
+        curvature_neuron = self.neuron if self.temperature_basis == "concave" else [1]
+        self.curvature_correction = InvarFitting(
+            var_name="fes_curvature",
+            ntypes=ntypes,
+            dim_descrpt=dim_descrpt + fparam_out_dim,
+            dim_out=1,
+            neuron=curvature_neuron,
+            resnet_dt=resnet_dt,
+            numb_fparam=self.correction_state_dim,
+            numb_aparam=0,
+            dim_case_embd=self.dim_case_embd,
+            activation_function=activation_function,
+            precision=precision,
+            mixed_types=mixed_types,
+            seed=seed,
+            exclude_types=self.exclude_types,
+            type_map=self.type_map,
+            trainable=trainable and self.temperature_basis == "concave",
         )
 
         self.fparam_network = self._build_fparam_network(seed)
@@ -329,7 +366,12 @@ class FreeEnergyFittingNet(Fitting):
         for param in self.correction.parameters():
             param.requires_grad = self.trainable
         for param in self.slope_correction.parameters():
-            param.requires_grad = self.trainable and self.temperature_basis == "affine"
+            param.requires_grad = self.trainable and self.temperature_basis in (
+                "affine",
+                "concave",
+            )
+        for param in self.curvature_correction.parameters():
+            param.requires_grad = self.trainable and self.temperature_basis == "concave"
         for param in self.fparam_network.parameters():
             param.requires_grad = self.trainable
 
@@ -359,7 +401,7 @@ class FreeEnergyFittingNet(Fitting):
             raise ValueError("the FES head requires a state vector in fparam")
         full_state = fparam.reshape(descriptor.shape[0], self.state_dim).to(self.prec)
         correction_fparam = full_state
-        if self.temperature_basis in ("linear_zero_anchor", "affine"):
+        if self.temperature_basis in ("linear_zero_anchor", "affine", "concave"):
             temperature_scale = full_state[:, :1] / self.temperature_scale
             correction_fparam = full_state[:, 1:]
         if self.fparam_neuron:
@@ -388,7 +430,7 @@ class FreeEnergyFittingNet(Fitting):
             correction_fparam,
             aparam,
         )["fes_correction"]
-        if self.temperature_basis in ("linear_zero_anchor", "affine"):
+        if self.temperature_basis == "linear_zero_anchor":
             correction = correction * temperature_scale.unsqueeze(1)
         elif self.temperature_basis == "affine":
             slope = self.slope_correction(
@@ -401,6 +443,34 @@ class FreeEnergyFittingNet(Fitting):
                 aparam,
             )["fes_slope"]
             correction = correction + slope * temperature_scale.unsqueeze(1)
+
+        elif self.temperature_basis == "concave":
+            slope = self.slope_correction(
+                corr_descriptor,
+                atype,
+                gr,
+                g2,
+                h2,
+                correction_fparam,
+                aparam,
+            )["fes_slope"]
+            raw_curvature = self.curvature_correction(
+                corr_descriptor,
+                atype,
+                gr,
+                g2,
+                h2,
+                correction_fparam,
+                aparam,
+            )["fes_curvature"]
+            curvature = torch.nn.functional.softplus(raw_curvature)
+            correction = (
+                correction
+                + slope * temperature_scale.unsqueeze(1)
+                - self.curvature_scale
+                * curvature
+                * temperature_scale.unsqueeze(1).square()
+            )
 
         return {
             "fes_baseline": baseline,
@@ -503,6 +573,7 @@ class FreeEnergyFittingNet(Fitting):
         self.baseline.change_type_map(type_map, model_with_new_type_stat)
         self.correction.change_type_map(type_map, model_with_new_type_stat)
         self.slope_correction.change_type_map(type_map, model_with_new_type_stat)
+        self.curvature_correction.change_type_map(type_map, model_with_new_type_stat)
         self.type_map = list(type_map)
         self.ntypes = len(type_map)
 
@@ -513,8 +584,10 @@ class FreeEnergyFittingNet(Fitting):
         single frozen reference potential across branches.
         """
         self.correction.set_case_embd(case_idx)
-        if self.temperature_basis == "affine":
+        if self.temperature_basis in ("affine", "concave"):
             self.slope_correction.set_case_embd(case_idx)
+        if self.temperature_basis == "concave":
+            self.curvature_correction.set_case_embd(case_idx)
 
     def compute_input_stats(
         self,
@@ -529,7 +602,7 @@ class FreeEnergyFittingNet(Fitting):
         the statistics are taken over ``[T, P, v, c]`` rather than the two raw
         columns found in ``fparam.npy``.
         """
-        if self.temperature_basis in ("linear_zero_anchor", "affine"):
+        if self.temperature_basis in ("linear_zero_anchor", "affine", "concave"):
             if callable(merged):
                 samples = merged()
             else:
@@ -542,6 +615,13 @@ class FreeEnergyFittingNet(Fitting):
             self.correction.compute_input_stats(reduced, protection, stat_file_path)
             if self.temperature_basis == "affine":
                 self.slope_correction.compute_input_stats(
+                    reduced, protection, stat_file_path
+                )
+            if self.temperature_basis == "concave":
+                self.slope_correction.compute_input_stats(
+                    reduced, protection, stat_file_path
+                )
+                self.curvature_correction.compute_input_stats(
                     reduced, protection, stat_file_path
                 )
         else:
@@ -570,6 +650,7 @@ class FreeEnergyFittingNet(Fitting):
             "use_composition": self.use_composition,
             "temperature_basis": self.temperature_basis,
             "temperature_scale": self.temperature_scale,
+            "curvature_scale": self.curvature_scale,
             "neuron": self.neuron,
             "fparam_neuron": self.fparam_neuron,
             "resnet_dt": self.resnet_dt,
@@ -587,6 +668,7 @@ class FreeEnergyFittingNet(Fitting):
                 "baseline": self.baseline.serialize(),
                 "correction": self.correction.serialize(),
                 "slope_correction": self.slope_correction.serialize(),
+                "curvature_correction": self.curvature_correction.serialize(),
                 "fparam_network": fparam_layers,
             },
         }
@@ -603,6 +685,10 @@ class FreeEnergyFittingNet(Fitting):
         obj.correction = InvarFitting.deserialize(variables["correction"])
         if "slope_correction" in variables:
             obj.slope_correction = InvarFitting.deserialize(variables["slope_correction"])
+        if "curvature_correction" in variables:
+            obj.curvature_correction = InvarFitting.deserialize(
+                variables["curvature_correction"]
+            )
         linears = [
             layer
             for layer in obj.fparam_network.modules()

@@ -2997,7 +2997,8 @@ def fitting_fes() -> list[Argument]:
         "Temperature dependence of the correction. `mlp` is the unrestricted "
         "conditioned head; `linear_zero_anchor` models delta G as T times a "
         "learned entropy-like coefficient and therefore vanishes at T=0; "
-        "`affine` learns independent intercept and temperature-slope terms."
+        "`affine` learns independent intercept and temperature-slope terms; "
+        "`concave` additionally enforces non-positive temperature curvature."
     )
     doc_fparam_neuron = (
         "Hidden sizes of the state-vector encoder, whose output is concatenated "
