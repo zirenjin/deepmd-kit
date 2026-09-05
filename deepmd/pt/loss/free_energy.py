@@ -74,16 +74,17 @@ class FreeEnergyLoss(TaskLoss):
             The 'beta' parameter of "smooth_mae".
         delta_g_pref : float
             Weight of the paired per-atom ``dG`` objective. Requires a
-            ``pair_systems`` data loader, which emits phase A followed by phase
-            B in each batch. The target is ``G_B/N_B - G_A/N_A``.
+            ``pair_systems`` data loader, which emits phase 0 followed by the
+            remaining phases in each batch. The targets are
+            ``G_phase/N_phase - G_phase0/N_phase0``.
         absolute_g_pref : float
             Weight of the absolute per-atom G objective. Set to zero for the
             gauge-free paired objective when only phase-relative free energy is
             scientifically identifiable.
         phase_mean_g_pref : float
             Weight of a phase-level gauge objective. For paired batches, the
-            per-atom G predictions are averaged separately within phase A and
-            phase B before comparing with their reference means. This
+            per-atom G predictions are averaged separately within each phase
+            before comparing with their reference means. This
             calibrates the phase gauge without fitting frame-level absolute
             fluctuations.
         """
