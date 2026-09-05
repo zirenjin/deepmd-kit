@@ -836,6 +836,7 @@ class FreeEnergyFittingNet(Fitting):
             "concave_log",
             "entropy_affine",
             "concave_entropy",
+            "piecewise_linear",
         ):
             if callable(merged):
                 samples = merged()
