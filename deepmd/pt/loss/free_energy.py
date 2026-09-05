@@ -55,6 +55,7 @@ class FreeEnergyLoss(TaskLoss):
         beta: float = 1.00,
         absolute_g_pref: float = 1.0,
         delta_g_pref: float = 0.0,
+        phase_mean_g_pref: float = 0.0,
         **kwargs: Any,
     ) -> None:
         r"""Construct a layer to compute the free energy loss.
@@ -79,6 +80,12 @@ class FreeEnergyLoss(TaskLoss):
             Weight of the absolute per-atom G objective. Set to zero for the
             gauge-free paired objective when only phase-relative free energy is
             scientifically identifiable.
+        phase_mean_g_pref : float
+            Weight of a phase-level gauge objective. For paired batches, the
+            per-atom G predictions are averaged separately within phase A and
+            phase B before comparing with their reference means. This
+            calibrates the phase gauge without fitting frame-level absolute
+            fluctuations.
         """
         super().__init__()
         self.var_name = var_name
@@ -88,6 +95,7 @@ class FreeEnergyLoss(TaskLoss):
         self.beta = beta
         self.absolute_g_pref = absolute_g_pref
         self.delta_g_pref = delta_g_pref
+        self.phase_mean_g_pref = phase_mean_g_pref
 
     @staticmethod
     def _per_atom(
@@ -189,6 +197,36 @@ class FreeEnergyLoss(TaskLoss):
                 delta_pred, delta_ref, reduction="mean"
             ).detach()
             more_loss["delta_rmse"] = torch.sqrt(delta_loss).detach()
+        if self.phase_mean_g_pref > 0.0:
+            if "pair_batch_size" not in label:
+                raise ValueError(
+                    "phase_mean_g_pref > 0 requires training_data.pair_systems"
+                )
+            pair_batch_size = int(label["pair_batch_size"].reshape(-1)[0].item())
+            if pred.shape[0] != 2 * pair_batch_size:
+                raise ValueError(
+                    "paired FES batch must contain phase A followed by phase B"
+                )
+            phase_pred = torch.cat(
+                (
+                    torch.mean(pred[:pair_batch_size], dim=0, keepdim=True),
+                    torch.mean(pred[pair_batch_size:], dim=0, keepdim=True),
+                ),
+                dim=0,
+            )
+            phase_ref = torch.cat(
+                (
+                    torch.mean(ref[:pair_batch_size], dim=0, keepdim=True),
+                    torch.mean(ref[pair_batch_size:], dim=0, keepdim=True),
+                ),
+                dim=0,
+            )
+            phase_mean_loss = F.mse_loss(phase_pred, phase_ref, reduction="mean")
+            loss = loss + self.phase_mean_g_pref * phase_mean_loss
+            more_loss["phase_mean_mae"] = F.l1_loss(
+                phase_pred, phase_ref, reduction="mean"
+            ).detach()
+            more_loss["phase_mean_rmse"] = torch.sqrt(phase_mean_loss).detach()
         if "mae" in self.metric:
             more_loss["mae"] = F.l1_loss(pred, ref, reduction="mean").detach()
         if "mse" in self.metric:
@@ -240,6 +278,7 @@ class FreeEnergyLoss(TaskLoss):
             "beta": self.beta,
             "absolute_g_pref": self.absolute_g_pref,
             "delta_g_pref": self.delta_g_pref,
+            "phase_mean_g_pref": self.phase_mean_g_pref,
         }
 
     @classmethod
