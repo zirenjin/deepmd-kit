@@ -1,0 +1,157 @@
+{
+  "model": {
+    "type_map": [
+      "Si",
+      "O"
+    ],
+    "descriptor": {
+      "type": "dpa3",
+      "repflow": {
+        "n_dim": 128,
+        "e_dim": 64,
+        "a_dim": 32,
+        "nlayers": 16,
+        "e_rcut": 6,
+        "e_rcut_smth": 5.3,
+        "e_sel": 1200,
+        "a_rcut": 4,
+        "a_rcut_smth": 3.5,
+        "a_sel": 300,
+        "axis_neuron": 4,
+        "skip_stat": true,
+        "a_compress_rate": 1,
+        "a_compress_e_rate": 2,
+        "a_compress_use_split": true,
+        "update_angle": true,
+        "smooth_edge_update": true,
+        "use_dynamic_sel": true,
+        "sel_reduce_factor": 10,
+        "update_style": "res_residual",
+        "update_residual": 0.1,
+        "update_residual_init": "const",
+        "n_multi_edge_message": 1,
+        "optim_update": true,
+        "use_exp_switch": true,
+        "fix_stat_std": 0.3,
+        "edge_init_use_dist": false,
+        "sequential_update": false
+      },
+      "activation_function": "custom_silu:3.0",
+      "precision": "float32",
+      "use_tebd_bias": false,
+      "concat_output_tebd": false,
+      "exclude_types": [],
+      "env_protection": 0,
+      "trainable": false,
+      "use_econf_tebd": false,
+      "add_chg_spin_ebd": false,
+      "default_chg_spin": null,
+      "use_loc_mapping": true
+    },
+    "fitting_net": {
+      "type": "fes",
+      "property_name": "free_energy",
+      "numb_state_fparam": 2,
+      "volume_mode": "per_atom",
+      "use_composition": true,
+      "fparam_neuron": [
+        128,
+        128
+      ],
+      "neuron": [
+        256,
+        256,
+        256
+      ],
+      "resnet_dt": true,
+      "activation_function": "tanh",
+      "precision": "float32",
+      "baseline": {
+        "neuron": [
+          240,
+          240,
+          240
+        ],
+        "activation_function": "custom_silu:3.0",
+        "resnet_dt": true,
+        "precision": "float32",
+        "dim_case_embd": 31,
+        "seed": 1,
+        "numb_fparam": 0,
+        "numb_aparam": 0,
+        "rcond": null,
+        "atom_ener": [],
+        "use_aparam_as_mask": false,
+        "default_fparam": null,
+        "trainable": false
+      },
+      "freeze_baseline": true,
+      "trainable": true,
+      "dim_case_embd": 31,
+      "seed": 17,
+      "temperature_basis": "piecewise_linear",
+      "temperature_knots": [
+        1000,
+        1200,
+        1900,
+        2200
+      ],
+      "phase_gauge_neuron": [
+        32,
+        32
+      ],
+      "phase_gauge_pooling": "mean_std_max",
+      "use_volume_in_correction": false,
+      "center_local_correction": true
+    }
+  },
+  "learning_rate": {
+    "type": "exp",
+    "start_lr": 0.001,
+    "stop_lr": 1e-06,
+    "decay_steps": 1000
+  },
+  "loss": {
+    "type": "fes",
+    "loss_func": "mse",
+    "metric": [
+      "mae",
+      "rmse"
+    ],
+    "absolute_g_pref": 0,
+    "delta_g_pref": 1,
+    "phase_mean_g_pref": 1
+  },
+  "training": {
+    "stat_file": "/GenSIvePFS/users/zirenj/fes_experiment_pbe_d3bj/fes_dpa31_fullpes_paired_dgonly_a100/fes_stats.hdf5",
+    "training_data": {
+      "systems": [
+        "/GenSIvePFS/users/zirenj/fes_experiment_pbe_d3bj/fes/train/quartz_beta",
+        "/GenSIvePFS/users/zirenj/fes_experiment_pbe_d3bj/fes/train/cristobalite_beta"
+      ],
+      "batch_size": 2,
+      "pair_systems": [
+        "/GenSIvePFS/users/zirenj/fes_experiment_pbe_d3bj/fes/train/quartz_beta",
+        "/GenSIvePFS/users/zirenj/fes_experiment_pbe_d3bj/fes/train/cristobalite_beta"
+      ]
+    },
+    "validation_data": {
+      "systems": [
+        "/GenSIvePFS/users/zirenj/fes_experiment_pbe_d3bj/fes/train/quartz_beta",
+        "/GenSIvePFS/users/zirenj/fes_experiment_pbe_d3bj/fes/train/cristobalite_beta"
+      ],
+      "batch_size": 2,
+      "numb_btch": 2,
+      "pair_systems": [
+        "/GenSIvePFS/users/zirenj/fes_experiment_pbe_d3bj/fes/train/quartz_beta",
+        "/GenSIvePFS/users/zirenj/fes_experiment_pbe_d3bj/fes/train/cristobalite_beta"
+      ]
+    },
+    "numb_steps": 3000,
+    "seed": 67,
+    "disp_file": "/GenSIvePFS/users/zirenj/fes_experiment_pbe_d3bj/fes_dpa31_fullpes_piecewise_meanstdmax_novolume_centerlocal_a100/train.out",
+    "disp_freq": 100,
+    "save_freq": 500,
+    "save_ckpt": "/GenSIvePFS/users/zirenj/fes_experiment_pbe_d3bj/fes_dpa31_fullpes_piecewise_meanstdmax_novolume_centerlocal_a100/model.ckpt"
+  }
+}
