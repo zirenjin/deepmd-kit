@@ -888,6 +888,9 @@ class Trainer:
                         _target_fitting_type = (
                             _input_model_params.get("fitting_net") or {}
                         ).get("type")
+                        _pretrained_fitting_type = (
+                            _pretrained_model_params.get("fitting_net") or {}
+                        ).get("type")
                         target_keys = [
                             i
                             for i in _random_state_dict.keys()
@@ -935,6 +938,21 @@ class Trainer:
                                     # the pretrained energy model's. Its per-type
                                     # energy offset is folded into the baseline's
                                     # bias_atom_e below instead.
+                                    use_random_initialization = True
+                            if (
+                                not use_random_initialization
+                                and new_key not in _origin_state_dict
+                            ):
+                                # A changed fitting type is a new task head. Its
+                                # task-specific parameters (including fparam
+                                # statistics) have no valid counterpart in the
+                                # pretrained model and must keep their random
+                                # initialization; the shared descriptor still
+                                # transfers normally.
+                                if (
+                                    _target_fitting_type != _pretrained_fitting_type
+                                    and ".fitting_net." in item_key
+                                ):
                                     use_random_initialization = True
                             if (
                                 not use_random_initialization
