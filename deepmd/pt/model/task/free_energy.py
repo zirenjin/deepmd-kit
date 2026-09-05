@@ -511,6 +511,8 @@ class FreeEnergyFittingNet(Fitting):
             * (
                 self.ntypes
                 if self.phase_gauge_pooling == "type_mean"
+                else 2
+                if self.phase_gauge_pooling == "deep_mean"
                 else 3
                 if self.phase_gauge_pooling == "mean_std_max"
                 else 2
@@ -545,7 +547,7 @@ class FreeEnergyFittingNet(Fitting):
         return torch.nn.Sequential(
             torch.nn.Linear(
                 self.dim_descrpt,
-                self.dim_descrpt,
+                2 * self.dim_descrpt,
                 dtype=self.prec,
                 device=env.DEVICE,
             ),
