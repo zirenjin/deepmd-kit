@@ -296,8 +296,6 @@ class FreeEnergyFittingNet(Fitting):
                     "temperature-dependent FES bases require temperature in fparam[:, 0]"
                 )
             self.correction_state_dim -= 1
-        if not self.use_volume_in_correction and self.volume_mode != "none":
-            self.correction_state_dim -= 1
 
         baseline_cfg = dict(baseline or {})
         for forbidden in ("numb_fparam", "numb_aparam"):
@@ -635,22 +633,17 @@ class FreeEnergyFittingNet(Fitting):
             temperature_scale = full_state[:, :1] / self.temperature_scale
             correction_fparam = full_state[:, 1:]
         if not self.use_volume_in_correction and self.volume_mode != "none":
-            if self.temperature_basis in (
-                "linear_zero_anchor",
-                "affine",
-                "concave",
-                "concave_log",
-                "entropy_affine",
-                "concave_entropy",
-                "piecewise_linear",
-            ):
-                correction_fparam = torch.cat(
-                    [full_state[:, 1:2], full_state[:, 3:]], dim=-1
+            # Preserve the parameter width for checkpoint compatibility, but
+            # replace the derived volume by its training mean before it enters
+            # any thermodynamic correction network.
+            correction_fparam = correction_fparam.clone()
+            volume_index = 1 if self.temperature_basis != "mlp" else 2
+            if self.correction.fparam_avg is not None:
+                correction_fparam[:, volume_index : volume_index + 1] = (
+                    self.correction.fparam_avg[1]
                 )
             else:
-                correction_fparam = torch.cat(
-                    [full_state[:, :2], full_state[:, 3:]], dim=-1
-                )
+                correction_fparam[:, volume_index : volume_index + 1] = 0.0
         if self.fparam_neuron:
             state = correction_fparam.reshape(
                 descriptor.shape[0], self.correction_state_dim
@@ -1084,10 +1077,6 @@ class FreeEnergyFittingNet(Fitting):
                 for sample in samples:
                     item = dict(sample)
                     item["fparam"] = sample["fparam"][..., 1:]
-                    if not self.use_volume_in_correction and self.volume_mode != "none":
-                        item["fparam"] = torch.cat(
-                            [item["fparam"][..., :1], item["fparam"][..., 2:]], dim=-1
-                        )
                     reduced_samples.append(item)
                 return reduced_samples
 
