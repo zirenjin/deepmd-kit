@@ -3001,7 +3001,8 @@ def fitting_fes() -> list[Argument]:
         "`concave` additionally enforces non-positive temperature curvature; "
         "`concave_log` uses a thermodynamic -T log(T) curvature basis; "
         "`entropy_affine` enforces a non-negative entropy coefficient; "
-        "`concave_entropy` enforces both non-negative entropy and heat capacity."
+        "`concave_entropy` enforces both non-negative entropy and heat capacity; "
+        "`piecewise_linear` uses fixed thermodynamic temperature knots."
     )
     doc_fparam_neuron = (
         "Hidden sizes of the state-vector encoder, whose output is concatenated "
@@ -3083,6 +3084,13 @@ def fitting_fes() -> list[Argument]:
             optional=True,
             default=1.0e-2,
             doc="Unit scale for the positive curvature coefficient in the concave basis.",
+        ),
+        Argument(
+            "temperature_knots",
+            list[float],
+            optional=True,
+            default=[1000.0, 1200.0, 1900.0, 2200.0],
+            doc="Four increasing temperatures used by the piecewise-linear basis.",
         ),
         Argument(
             "fparam_neuron",

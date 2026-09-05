@@ -148,6 +148,7 @@ class FreeEnergyFittingNet(Fitting):
         temperature_basis: str = "mlp",
         temperature_scale: float = 1000.0,
         curvature_scale: float = 1.0e-2,
+        temperature_knots: list[float] | None = None,
         neuron: list[int] | None = None,
         fparam_neuron: list[int] | None = None,
         resnet_dt: bool = True,
@@ -185,11 +186,12 @@ class FreeEnergyFittingNet(Fitting):
             "concave_log",
             "entropy_affine",
             "concave_entropy",
+            "piecewise_linear",
         ):
             raise ValueError(
                 "temperature_basis must be 'mlp', 'linear_zero_anchor', 'affine', "
                 "or 'concave', 'concave_log', 'entropy_affine', or "
-                "'concave_entropy'"
+                "'concave_entropy', or 'piecewise_linear'"
             )
         if temperature_scale <= 0.0:
             raise ValueError("temperature_scale must be positive")
@@ -198,6 +200,14 @@ class FreeEnergyFittingNet(Fitting):
         self.temperature_basis = temperature_basis
         self.temperature_scale = float(temperature_scale)
         self.curvature_scale = float(curvature_scale)
+        self.temperature_knots = list(
+            temperature_knots or [1000.0, 1200.0, 1900.0, 2200.0]
+        )
+        if len(self.temperature_knots) != 4 or any(
+            self.temperature_knots[ii] >= self.temperature_knots[ii + 1]
+            for ii in range(3)
+        ):
+            raise ValueError("temperature_knots must contain four increasing values")
         self.neuron = list(neuron or [128, 128, 128])
         self.fparam_neuron = list(fparam_neuron if fparam_neuron is not None else [])
         self.resnet_dt = resnet_dt
@@ -238,6 +248,7 @@ class FreeEnergyFittingNet(Fitting):
             "concave_log",
             "entropy_affine",
             "concave_entropy",
+            "piecewise_linear",
         ):
             if self.numb_state_fparam < 1:
                 raise ValueError(
@@ -286,6 +297,62 @@ class FreeEnergyFittingNet(Fitting):
             exclude_types=self.exclude_types,
             type_map=self.type_map,
             trainable=trainable,
+        )
+        knot_neuron = self.neuron if self.temperature_basis == "piecewise_linear" else [1]
+        knot_trainable = trainable and self.temperature_basis == "piecewise_linear"
+        self.knot_correction_1 = InvarFitting(
+            var_name="fes_knot_1",
+            ntypes=ntypes,
+            dim_descrpt=dim_descrpt + fparam_out_dim,
+            dim_out=1,
+            neuron=knot_neuron,
+            resnet_dt=resnet_dt,
+            numb_fparam=self.correction_state_dim,
+            numb_aparam=0,
+            dim_case_embd=self.dim_case_embd,
+            activation_function=activation_function,
+            precision=precision,
+            mixed_types=mixed_types,
+            seed=seed,
+            exclude_types=self.exclude_types,
+            type_map=self.type_map,
+            trainable=knot_trainable,
+        )
+        self.knot_correction_2 = InvarFitting(
+            var_name="fes_knot_2",
+            ntypes=ntypes,
+            dim_descrpt=dim_descrpt + fparam_out_dim,
+            dim_out=1,
+            neuron=knot_neuron,
+            resnet_dt=resnet_dt,
+            numb_fparam=self.correction_state_dim,
+            numb_aparam=0,
+            dim_case_embd=self.dim_case_embd,
+            activation_function=activation_function,
+            precision=precision,
+            mixed_types=mixed_types,
+            seed=seed,
+            exclude_types=self.exclude_types,
+            type_map=self.type_map,
+            trainable=knot_trainable,
+        )
+        self.knot_correction_3 = InvarFitting(
+            var_name="fes_knot_3",
+            ntypes=ntypes,
+            dim_descrpt=dim_descrpt + fparam_out_dim,
+            dim_out=1,
+            neuron=knot_neuron,
+            resnet_dt=resnet_dt,
+            numb_fparam=self.correction_state_dim,
+            numb_aparam=0,
+            dim_case_embd=self.dim_case_embd,
+            activation_function=activation_function,
+            precision=precision,
+            mixed_types=mixed_types,
+            seed=seed,
+            exclude_types=self.exclude_types,
+            type_map=self.type_map,
+            trainable=knot_trainable,
         )
         # Keep the optional slope module present in every scripted instance;
         # use a tiny inactive net outside affine mode to preserve the default
@@ -399,6 +466,12 @@ class FreeEnergyFittingNet(Fitting):
             param.requires_grad = not self.freeze_baseline
         for param in self.correction.parameters():
             param.requires_grad = self.trainable
+        for param in self.knot_correction_1.parameters():
+            param.requires_grad = self.trainable and self.temperature_basis == "piecewise_linear"
+        for param in self.knot_correction_2.parameters():
+            param.requires_grad = self.trainable and self.temperature_basis == "piecewise_linear"
+        for param in self.knot_correction_3.parameters():
+            param.requires_grad = self.trainable and self.temperature_basis == "piecewise_linear"
         for param in self.slope_correction.parameters():
             param.requires_grad = self.trainable and self.temperature_basis in (
                 "affine",
@@ -476,7 +549,40 @@ class FreeEnergyFittingNet(Fitting):
             correction_fparam,
             aparam,
         )["fes_correction"]
-        if self.temperature_basis == "linear_zero_anchor":
+        if self.temperature_basis == "piecewise_linear":
+            knot_1 = self.knot_correction_1(
+                corr_descriptor, atype, gr, g2, h2, correction_fparam, aparam
+            )["fes_knot_1"]
+            knot_2 = self.knot_correction_2(
+                corr_descriptor, atype, gr, g2, h2, correction_fparam, aparam
+            )["fes_knot_2"]
+            knot_3 = self.knot_correction_3(
+                corr_descriptor, atype, gr, g2, h2, correction_fparam, aparam
+            )["fes_knot_3"]
+            t = full_state[:, :1]
+            k0 = self.temperature_knots[0]
+            k1 = self.temperature_knots[1]
+            k2 = self.temperature_knots[2]
+            k3 = self.temperature_knots[3]
+            w0 = torch.clamp((k1 - t) / (k1 - k0), 0.0, 1.0)
+            w1 = torch.where(
+                t <= k1,
+                torch.clamp((t - k0) / (k1 - k0), 0.0, 1.0),
+                torch.clamp((k2 - t) / (k2 - k1), 0.0, 1.0),
+            )
+            w2 = torch.where(
+                t <= k2,
+                torch.clamp((t - k1) / (k2 - k1), 0.0, 1.0),
+                torch.clamp((k3 - t) / (k3 - k2), 0.0, 1.0),
+            )
+            w3 = torch.clamp((t - k2) / (k3 - k2), 0.0, 1.0)
+            correction = (
+                correction * w0.unsqueeze(1)
+                + knot_1 * w1.unsqueeze(1)
+                + knot_2 * w2.unsqueeze(1)
+                + knot_3 * w3.unsqueeze(1)
+            )
+        elif self.temperature_basis == "linear_zero_anchor":
             correction = correction * temperature_scale.unsqueeze(1)
         elif self.temperature_basis == "affine":
             slope = self.slope_correction(
@@ -679,6 +785,9 @@ class FreeEnergyFittingNet(Fitting):
     ) -> None:
         self.baseline.change_type_map(type_map, model_with_new_type_stat)
         self.correction.change_type_map(type_map, model_with_new_type_stat)
+        self.knot_correction_1.change_type_map(type_map, model_with_new_type_stat)
+        self.knot_correction_2.change_type_map(type_map, model_with_new_type_stat)
+        self.knot_correction_3.change_type_map(type_map, model_with_new_type_stat)
         self.slope_correction.change_type_map(type_map, model_with_new_type_stat)
         self.curvature_correction.change_type_map(type_map, model_with_new_type_stat)
         self.type_map = list(type_map)
@@ -691,6 +800,10 @@ class FreeEnergyFittingNet(Fitting):
         single frozen reference potential across branches.
         """
         self.correction.set_case_embd(case_idx)
+        if self.temperature_basis == "piecewise_linear":
+            self.knot_correction_1.set_case_embd(case_idx)
+            self.knot_correction_2.set_case_embd(case_idx)
+            self.knot_correction_3.set_case_embd(case_idx)
         if self.temperature_basis in (
             "affine",
             "concave",
@@ -744,6 +857,16 @@ class FreeEnergyFittingNet(Fitting):
                 self.curvature_correction.compute_input_stats(
                     reduced, protection, stat_file_path
                 )
+            if self.temperature_basis == "piecewise_linear":
+                self.knot_correction_1.compute_input_stats(
+                    reduced, protection, stat_file_path
+                )
+                self.knot_correction_2.compute_input_stats(
+                    reduced, protection, stat_file_path
+                )
+                self.knot_correction_3.compute_input_stats(
+                    reduced, protection, stat_file_path
+                )
         else:
             self.correction.compute_input_stats(merged, protection, stat_file_path)
 
@@ -771,6 +894,7 @@ class FreeEnergyFittingNet(Fitting):
             "temperature_basis": self.temperature_basis,
             "temperature_scale": self.temperature_scale,
             "curvature_scale": self.curvature_scale,
+            "temperature_knots": self.temperature_knots,
             "neuron": self.neuron,
             "fparam_neuron": self.fparam_neuron,
             "resnet_dt": self.resnet_dt,
@@ -787,6 +911,9 @@ class FreeEnergyFittingNet(Fitting):
             "@variables": {
                 "baseline": self.baseline.serialize(),
                 "correction": self.correction.serialize(),
+                "knot_correction_1": self.knot_correction_1.serialize(),
+                "knot_correction_2": self.knot_correction_2.serialize(),
+                "knot_correction_3": self.knot_correction_3.serialize(),
                 "slope_correction": self.slope_correction.serialize(),
                 "curvature_correction": self.curvature_correction.serialize(),
                 "fparam_network": fparam_layers,
@@ -803,6 +930,12 @@ class FreeEnergyFittingNet(Fitting):
         obj = cls(**data)
         obj.baseline = EnergyFittingNet.deserialize(variables["baseline"])
         obj.correction = InvarFitting.deserialize(variables["correction"])
+        if "knot_correction_1" in variables:
+            obj.knot_correction_1 = InvarFitting.deserialize(variables["knot_correction_1"])
+        if "knot_correction_2" in variables:
+            obj.knot_correction_2 = InvarFitting.deserialize(variables["knot_correction_2"])
+        if "knot_correction_3" in variables:
+            obj.knot_correction_3 = InvarFitting.deserialize(variables["knot_correction_3"])
         if "slope_correction" in variables:
             obj.slope_correction = InvarFitting.deserialize(variables["slope_correction"])
         if "curvature_correction" in variables:
