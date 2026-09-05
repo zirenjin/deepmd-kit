@@ -234,10 +234,11 @@ class FreeEnergyFittingNet(Fitting):
             "affine",
             "concave",
             "concave_log",
+            "entropy_affine",
         ):
             if self.numb_state_fparam < 1:
                 raise ValueError(
-                    "linear_zero_anchor requires temperature in fparam[:, 0]"
+                    "temperature-dependent FES bases require temperature in fparam[:, 0]"
                 )
             self.correction_state_dim -= 1
 
