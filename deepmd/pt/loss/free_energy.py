@@ -185,12 +185,15 @@ class FreeEnergyLoss(TaskLoss):
                     "delta_g_pref > 0 requires training_data.pair_systems"
                 )
             pair_batch_size = int(label["pair_batch_size"].reshape(-1)[0].item())
-            if pred.shape[0] != 2 * pair_batch_size:
-                raise ValueError(
-                    "paired FES batch must contain phase A followed by phase B"
-                )
-            delta_pred = pred[pair_batch_size:] - pred[:pair_batch_size]
-            delta_ref = ref[pair_batch_size:] - ref[:pair_batch_size]
+            pair_phase_count = int(
+                label.get("pair_phase_count", torch.tensor(2)).reshape(-1)[0].item()
+            )
+            if pair_phase_count < 2 or pred.shape[0] != pair_phase_count * pair_batch_size:
+                raise ValueError("paired FES batch has inconsistent phase metadata")
+            pred_phases = pred.reshape(pair_phase_count, pair_batch_size, -1)
+            ref_phases = ref.reshape(pair_phase_count, pair_batch_size, -1)
+            delta_pred = pred_phases[1:] - pred_phases[:1]
+            delta_ref = ref_phases[1:] - ref_phases[:1]
             delta_loss = F.mse_loss(delta_pred, delta_ref, reduction="mean")
             loss = loss + self.delta_g_pref * delta_loss
             more_loss["delta_mae"] = F.l1_loss(
@@ -207,20 +210,10 @@ class FreeEnergyLoss(TaskLoss):
                 raise ValueError(
                     "paired FES batch must contain phase A followed by phase B"
                 )
-            phase_pred = torch.cat(
-                (
-                    torch.mean(pred[:pair_batch_size], dim=0, keepdim=True),
-                    torch.mean(pred[pair_batch_size:], dim=0, keepdim=True),
-                ),
-                dim=0,
-            )
-            phase_ref = torch.cat(
-                (
-                    torch.mean(ref[:pair_batch_size], dim=0, keepdim=True),
-                    torch.mean(ref[pair_batch_size:], dim=0, keepdim=True),
-                ),
-                dim=0,
-            )
+            pred_phases = pred.reshape(pair_phase_count, pair_batch_size, -1)
+            ref_phases = ref.reshape(pair_phase_count, pair_batch_size, -1)
+            phase_pred = torch.mean(pred_phases, dim=1)
+            phase_ref = torch.mean(ref_phases, dim=1)
             phase_mean_loss = F.mse_loss(phase_pred, phase_ref, reduction="mean")
             loss = loss + self.phase_mean_g_pref * phase_mean_loss
             more_loss["phase_mean_mae"] = F.l1_loss(

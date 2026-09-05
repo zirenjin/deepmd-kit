@@ -305,10 +305,10 @@ class DpLoaderSet(Dataset):
 
 
 class PairedDpLoaderSet(Dataset):
-    """Yield synchronized batches from two systems for contrastive FES loss.
+    """Yield synchronized batches from two or more systems for contrastive FES loss.
 
-    The two systems must expose the same frame ordering (for example, the
-    shared-temperature quartz/cristobalite FES systems). Frames are padded with
+    All systems must expose the same frame ordering (for example, several
+    phase-specific FES systems sampled on a shared temperature grid). Frames are padded with
     virtual atoms so one model call can evaluate both phases; the atomic mask
     in the model keeps padding out of the descriptor reduction.
     """
@@ -321,8 +321,8 @@ class PairedDpLoaderSet(Dataset):
         seed: int | list[int] | None = None,
         modifier: BaseModifier | None = None,
     ) -> None:
-        if len(systems) != 2:
-            raise ValueError("pair_systems must contain exactly two systems")
+        if len(systems) < 2:
+            raise ValueError("pair_systems must contain at least two systems")
         self.systems = [
             DeepmdDataSetForLoader(system, type_map=type_map, modifier=modifier)
             for system in systems
@@ -332,6 +332,7 @@ class PairedDpLoaderSet(Dataset):
         self.batch_size = max(int(batch_size), 1)
         self.nframes = len(self.systems[0])
         self.max_natoms = max(item._natoms for item in self.systems)
+        self.nphases = len(self.systems)
         self.index = [max(1, int(np.ceil(self.nframes / self.batch_size)))]
         self.total_batch = self.index[0]
         self._counter = 0
@@ -363,21 +364,23 @@ class PairedDpLoaderSet(Dataset):
             phase_batches.append(self._pad_frame_batch(collate_batch(frames), self.max_natoms))
 
         result: dict[str, Any] = {}
-        first, second = phase_batches
+        first = phase_batches[0]
         for key in first:
             if key in {"fid", "type"} or key.startswith("find_"):
                 result[key] = first[key]
                 continue
-            if key not in second:
-                raise ValueError(f"paired systems have different data keys: {key}")
-            left, right = first[key], second[key]
-            if isinstance(left, torch.Tensor):
-                result[key] = torch.cat((left, right), dim=0)
+            values = [batch[key] for batch in phase_batches]
+            if isinstance(values[0], torch.Tensor):
+                result[key] = torch.cat(values, dim=0)
             else:
-                result[key] = left + right
+                merged = values[0]
+                for value in values[1:]:
+                    merged = merged + value
+                result[key] = merged
         result["pair_batch_size"] = torch.tensor(self.batch_size, dtype=torch.int64)
+        result["pair_phase_count"] = torch.tensor(self.nphases, dtype=torch.int64)
         result["sid"] = 0
-        result["fid"] = first["fid"] + second["fid"]
+        result["fid"] = sum((batch["fid"] for batch in phase_batches), [])
         return result
 
     def add_data_requirement(self, data_requirement: list[DataRequirementItem]) -> None:

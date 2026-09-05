@@ -5419,8 +5419,9 @@ If MPI is used, the value should be considered as the batch size per task.'
             optional=True,
             default=None,
             doc=(
-                "Two systems with synchronized frame ordering for paired losses. "
-                "When set, each batch contains both systems and `systems` is ignored."
+                "Two or more systems with synchronized frame ordering for paired "
+                "losses. When set, each batch contains all systems and `systems` "
+                "is ignored; phase 0 is the shared reference phase."
             ),
         ),
         Argument(
@@ -5513,8 +5514,9 @@ def validation_data_args() -> list[
             optional=True,
             default=None,
             doc=(
-                "Two systems with synchronized frame ordering for paired losses. "
-                "When set, each validation batch contains both systems."
+                "Two or more systems with synchronized frame ordering for paired "
+                "losses. When set, each validation batch contains all systems; "
+                "phase 0 is the shared reference phase."
             ),
         ),
         Argument(
