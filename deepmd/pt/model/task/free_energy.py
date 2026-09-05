@@ -648,9 +648,7 @@ class FreeEnergyFittingNet(Fitting):
         # module-level strings.  ``test_fes_output_names`` pins them to
         # BASELINE_NAME/CORRECTION_NAME so the two cannot drift apart.
         if self.phase_gauge_only:
-            correction = torch.zeros(
-                (*descriptor.shape[:2], 1), dtype=descriptor.dtype, device=descriptor.device
-            )
+            correction = torch.zeros_like(descriptor[..., :1])
         else:
             correction = self.correction(
                 corr_descriptor,
