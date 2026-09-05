@@ -3002,6 +3002,8 @@ def fitting_fes() -> list[Argument]:
         "`concave_log` uses a thermodynamic -T log(T) curvature basis; "
         "`entropy_affine` enforces a non-negative entropy coefficient; "
         "`concave_entropy` enforces both non-negative entropy and heat capacity; "
+        "`polynomial` uses a system-independent cubic basis in T/1000 K; "
+        "`tlog_polynomial` uses a system-independent T log(T) plus quadratic basis; "
         "`piecewise_linear` uses fixed thermodynamic temperature knots."
     )
     doc_fparam_neuron = (
