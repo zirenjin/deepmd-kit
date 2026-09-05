@@ -3072,7 +3072,14 @@ def fitting_fes() -> list[Argument]:
             [float, int],
             optional=True,
             default=1000.0,
-            doc="Scale in kelvin for the linear-zero-anchor temperature basis.",
+            doc="Scale in kelvin for temperature-basis coordinates.",
+        ),
+        Argument(
+            "curvature_scale",
+            [float, int],
+            optional=True,
+            default=1.0e-2,
+            doc="Unit scale for the positive curvature coefficient in the concave basis.",
         ),
         Argument(
             "fparam_neuron",
