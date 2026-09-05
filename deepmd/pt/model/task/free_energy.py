@@ -220,10 +220,11 @@ class FreeEnergyFittingNet(Fitting):
             "mean_std",
             "mean_std_max",
             "type_mean",
+            "deep_mean",
         ):
             raise ValueError(
                 "phase_gauge_pooling must be 'mean', 'mean_max', 'mean_std', "
-                "or 'mean_std_max', or 'type_mean'"
+                "or 'mean_std_max', 'type_mean', or 'deep_mean'"
             )
         self.phase_gauge_pooling = phase_gauge_pooling
         if phase_gauge_basis not in ("piecewise_linear", "concave"):
@@ -466,6 +467,7 @@ class FreeEnergyFittingNet(Fitting):
         )
 
         self.fparam_network = self._build_fparam_network(seed)
+        self.phase_gauge_atom_network = self._build_phase_gauge_atom_network()
         self.phase_gauge_network = self._build_phase_gauge_network()
 
         self._set_trainable()
@@ -536,6 +538,20 @@ class FreeEnergyFittingNet(Fitting):
                 layers.append(_activation(self.activation_function))
         return torch.nn.Sequential(*layers).to(env.DEVICE)
 
+    def _build_phase_gauge_atom_network(self) -> torch.nn.Module:
+        """Build an atomwise map before permutation-invariant pooling."""
+        if self.phase_gauge_pooling != "deep_mean":
+            return torch.nn.Identity()
+        return torch.nn.Sequential(
+            torch.nn.Linear(
+                self.dim_descrpt,
+                self.dim_descrpt,
+                dtype=self.prec,
+                device=env.DEVICE,
+            ),
+            _activation(self.activation_function),
+        ).to(env.DEVICE)
+
     def _center_local_correction(
         self, value: torch.Tensor, atype: torch.Tensor
     ) -> torch.Tensor:
@@ -572,6 +588,8 @@ class FreeEnergyFittingNet(Fitting):
             param.requires_grad = self.trainable
         for param in self.phase_gauge_network.parameters():
             param.requires_grad = self.trainable and bool(self.phase_gauge_neuron)
+        for param in self.phase_gauge_atom_network.parameters():
+            param.requires_grad = self.trainable and self.phase_gauge_pooling == "deep_mean"
 
     def forward(
         self,
@@ -647,8 +665,11 @@ class FreeEnergyFittingNet(Fitting):
         if self.phase_gauge_neuron:
             atom_mask = (atype >= 0).to(self.prec)
             atom_count = torch.clamp(torch.sum(atom_mask, dim=1), min=1.0)
+            pooled_input = descriptor.to(self.prec)
+            if self.phase_gauge_pooling == "deep_mean":
+                pooled_input = self.phase_gauge_atom_network(pooled_input)
             pooled_descriptor = torch.sum(
-                descriptor.to(self.prec) * atom_mask.unsqueeze(-1), dim=1
+                pooled_input * atom_mask.unsqueeze(-1), dim=1
             ) / atom_count.unsqueeze(-1)
             if self.phase_gauge_pooling == "type_mean":
                 type_means = []
@@ -1098,6 +1119,14 @@ class FreeEnergyFittingNet(Fitting):
             for layer in self.phase_gauge_network.modules()
             if isinstance(layer, torch.nn.Linear)
         ]
+        phase_gauge_atom_layers = [
+            {
+                "matrix": to_numpy_array(layer.weight),
+                "bias": to_numpy_array(layer.bias),
+            }
+            for layer in self.phase_gauge_atom_network.modules()
+            if isinstance(layer, torch.nn.Linear)
+        ]
         return {
             "@class": "Fitting",
             "@version": 1,
@@ -1139,7 +1168,8 @@ class FreeEnergyFittingNet(Fitting):
                 "slope_correction": self.slope_correction.serialize(),
                 "curvature_correction": self.curvature_correction.serialize(),
                 "fparam_network": fparam_layers,
-                "phase_gauge_network": phase_gauge_layers,
+            "phase_gauge_network": phase_gauge_layers,
+                "phase_gauge_atom_network": phase_gauge_atom_layers,
             },
         }
 
@@ -1181,6 +1211,17 @@ class FreeEnergyFittingNet(Fitting):
             ]
             for layer, saved in zip(
                 gauge_linears, variables["phase_gauge_network"], strict=True
+            ):
+                layer.weight.data.copy_(to_torch_tensor(saved["matrix"]))
+                layer.bias.data.copy_(to_torch_tensor(saved["bias"]))
+        if "phase_gauge_atom_network" in variables:
+            atom_linears = [
+                layer
+                for layer in obj.phase_gauge_atom_network.modules()
+                if isinstance(layer, torch.nn.Linear)
+            ]
+            for layer, saved in zip(
+                atom_linears, variables["phase_gauge_atom_network"], strict=True
             ):
                 layer.weight.data.copy_(to_torch_tensor(saved["matrix"]))
                 layer.bias.data.copy_(to_torch_tensor(saved["bias"]))

@@ -3110,7 +3110,7 @@ def fitting_fes() -> list[Argument]:
             default="mean",
             doc=(
                 "Invariant pooling for the phase gauge: `mean`, `mean_max`, "
-                "`mean_std`, `mean_std_max`, or `type_mean`."
+                "`mean_std`, `mean_std_max`, `type_mean`, or `deep_mean`."
             ),
         ),
         Argument(
