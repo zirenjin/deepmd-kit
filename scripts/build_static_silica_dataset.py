@@ -85,10 +85,15 @@ def main() -> None:
                 set_dir / "fparam.npy",
                 np.column_stack((temperatures[start:stop], np.zeros(stop - start))),
             )
-            np.save(set_dir / "free_energy.npy", energies[phase][start:stop, None])
+            # DeepMD energy labels are extensive; the reference table is per atom.
+            np.save(
+                set_dir / "free_energy.npy",
+                (energies[phase][start:stop] * len(atype))[:, None],
+            )
         metadata["phases"][phase] = {
             "source": source.as_posix(),
             "n_atoms": int(len(atype)),
+            "label_unit": "eV_per_structure (converted from eV_per_atom)",
             "coord_sha256": digest(coords),
             "box_sha256": digest(box),
             "atype_sha256": digest(atype),
