@@ -3093,6 +3093,17 @@ def fitting_fes() -> list[Argument]:
             doc="Four increasing temperatures used by the piecewise-linear basis.",
         ),
         Argument(
+            "phase_gauge_neuron",
+            list[int],
+            optional=True,
+            default=[],
+            doc=(
+                "Hidden sizes of an optional permutation-invariant global "
+                "phase-gauge network. It outputs one offset per temperature "
+                "knot and requires the piecewise-linear basis."
+            ),
+        ),
+        Argument(
             "fparam_neuron",
             list[int],
             optional=True,

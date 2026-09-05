@@ -149,6 +149,7 @@ class FreeEnergyFittingNet(Fitting):
         temperature_scale: float = 1000.0,
         curvature_scale: float = 1.0e-2,
         temperature_knots: list[float] | None = None,
+        phase_gauge_neuron: list[int] | None = None,
         neuron: list[int] | None = None,
         fparam_neuron: list[int] | None = None,
         resnet_dt: bool = True,
@@ -208,6 +209,12 @@ class FreeEnergyFittingNet(Fitting):
             for ii in range(3)
         ):
             raise ValueError("temperature_knots must contain four increasing values")
+        self.phase_gauge_neuron = list(phase_gauge_neuron or [])
+        if self.phase_gauge_neuron and self.temperature_basis != "piecewise_linear":
+            raise ValueError(
+                "phase_gauge_neuron currently requires temperature_basis="
+                "'piecewise_linear'"
+            )
         self.neuron = list(neuron or [128, 128, 128])
         self.fparam_neuron = list(fparam_neuron if fparam_neuron is not None else [])
         self.resnet_dt = resnet_dt
@@ -428,6 +435,7 @@ class FreeEnergyFittingNet(Fitting):
         )
 
         self.fparam_network = self._build_fparam_network(seed)
+        self.phase_gauge_network = self._build_phase_gauge_network()
 
         self._set_trainable()
 
@@ -461,6 +469,29 @@ class FreeEnergyFittingNet(Fitting):
                 layers = build()
         return torch.nn.Sequential(*layers).to(env.DEVICE)
 
+    def _build_phase_gauge_network(self) -> torch.nn.Module:
+        """Build a global, permutation-invariant phase-gauge predictor."""
+        if not self.phase_gauge_neuron:
+            return torch.nn.Identity()
+        dims = [
+            self.dim_descrpt + self.correction_state_dim,
+            *self.phase_gauge_neuron,
+            4,
+        ]
+        layers: list[torch.nn.Module] = []
+        for ii in range(len(dims) - 1):
+            layers.append(
+                torch.nn.Linear(
+                    dims[ii],
+                    dims[ii + 1],
+                    dtype=self.prec,
+                    device=env.DEVICE,
+                )
+            )
+            if ii < len(dims) - 2:
+                layers.append(_activation(self.activation_function))
+        return torch.nn.Sequential(*layers).to(env.DEVICE)
+
     def _set_trainable(self) -> None:
         for param in self.baseline.parameters():
             param.requires_grad = not self.freeze_baseline
@@ -486,6 +517,8 @@ class FreeEnergyFittingNet(Fitting):
             )
         for param in self.fparam_network.parameters():
             param.requires_grad = self.trainable
+        for param in self.phase_gauge_network.parameters():
+            param.requires_grad = self.trainable and bool(self.phase_gauge_neuron)
 
     def forward(
         self,
@@ -550,6 +583,25 @@ class FreeEnergyFittingNet(Fitting):
             correction_fparam,
             aparam,
         )["fes_correction"]
+        phase_gauge = torch.zeros(
+            (descriptor.shape[0], 4), dtype=correction.dtype, device=descriptor.device
+        )
+        if self.phase_gauge_neuron:
+            atom_mask = (atype >= 0).to(self.prec)
+            atom_count = torch.clamp(torch.sum(atom_mask, dim=1), min=1.0)
+            pooled_descriptor = torch.sum(
+                descriptor.to(self.prec) * atom_mask.unsqueeze(-1), dim=1
+            ) / atom_count.unsqueeze(-1)
+            gauge_state = correction_fparam.reshape(
+                descriptor.shape[0], self.correction_state_dim
+            ).to(self.prec)
+            avg = self.correction.fparam_avg
+            inv_std = self.correction.fparam_inv_std
+            if avg is not None and inv_std is not None:
+                gauge_state = (gauge_state - avg) * inv_std
+            phase_gauge = self.phase_gauge_network(
+                torch.cat([pooled_descriptor, gauge_state], dim=-1)
+            )
         if self.temperature_basis == "piecewise_linear":
             knot_1 = self.knot_correction_1(
                 corr_descriptor, atype, gr, g2, h2, correction_fparam, aparam
@@ -560,6 +612,14 @@ class FreeEnergyFittingNet(Fitting):
             knot_3 = self.knot_correction_3(
                 corr_descriptor, atype, gr, g2, h2, correction_fparam, aparam
             )["fes_knot_3"]
+            if self.phase_gauge_neuron:
+                atom_count = torch.clamp(
+                    torch.sum((atype >= 0).to(correction.dtype), dim=1), min=1.0
+                ).reshape(-1, 1, 1)
+                correction = correction + phase_gauge[:, 0:1].unsqueeze(1) / atom_count
+                knot_1 = knot_1 + phase_gauge[:, 1:2].unsqueeze(1) / atom_count
+                knot_2 = knot_2 + phase_gauge[:, 2:3].unsqueeze(1) / atom_count
+                knot_3 = knot_3 + phase_gauge[:, 3:4].unsqueeze(1) / atom_count
             t = full_state[:, :1]
             k0 = self.temperature_knots[0]
             k1 = self.temperature_knots[1]
@@ -883,6 +943,14 @@ class FreeEnergyFittingNet(Fitting):
             for layer in self.fparam_network.modules()
             if isinstance(layer, torch.nn.Linear)
         ]
+        phase_gauge_layers = [
+            {
+                "matrix": to_numpy_array(layer.weight),
+                "bias": to_numpy_array(layer.bias),
+            }
+            for layer in self.phase_gauge_network.modules()
+            if isinstance(layer, torch.nn.Linear)
+        ]
         return {
             "@class": "Fitting",
             "@version": 1,
@@ -897,6 +965,7 @@ class FreeEnergyFittingNet(Fitting):
             "temperature_scale": self.temperature_scale,
             "curvature_scale": self.curvature_scale,
             "temperature_knots": self.temperature_knots,
+            "phase_gauge_neuron": self.phase_gauge_neuron,
             "neuron": self.neuron,
             "fparam_neuron": self.fparam_neuron,
             "resnet_dt": self.resnet_dt,
@@ -919,6 +988,7 @@ class FreeEnergyFittingNet(Fitting):
                 "slope_correction": self.slope_correction.serialize(),
                 "curvature_correction": self.curvature_correction.serialize(),
                 "fparam_network": fparam_layers,
+                "phase_gauge_network": phase_gauge_layers,
             },
         }
 
@@ -952,6 +1022,17 @@ class FreeEnergyFittingNet(Fitting):
         for layer, saved in zip(linears, variables["fparam_network"], strict=True):
             layer.weight.data.copy_(to_torch_tensor(saved["matrix"]))
             layer.bias.data.copy_(to_torch_tensor(saved["bias"]))
+        if "phase_gauge_network" in variables:
+            gauge_linears = [
+                layer
+                for layer in obj.phase_gauge_network.modules()
+                if isinstance(layer, torch.nn.Linear)
+            ]
+            for layer, saved in zip(
+                gauge_linears, variables["phase_gauge_network"], strict=True
+            ):
+                layer.weight.data.copy_(to_torch_tensor(saved["matrix"]))
+                layer.bias.data.copy_(to_torch_tensor(saved["bias"]))
         obj._set_trainable()
         return obj
 
