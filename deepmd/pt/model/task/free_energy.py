@@ -348,7 +348,6 @@ class FreeEnergyFittingNet(Fitting):
             state = correction_fparam.reshape(
                 descriptor.shape[0], self.correction_state_dim
             ).to(self.prec)
-            if self.temperature_basis == "linear_zero_anchor":
             # Reuse the correction net's fparam statistics so the encoder and
             # the raw concatenation path see the identically normalized vector.
             avg = self.correction.fparam_avg
