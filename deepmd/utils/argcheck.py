@@ -3058,6 +3058,16 @@ def fitting_fes() -> list[Argument]:
             doc=doc_volume_mode,
         ),
         Argument(
+            "use_volume_in_correction",
+            bool,
+            optional=True,
+            default=True,
+            doc=(
+                "Whether the thermodynamic correction receives the derived "
+                "volume; the DPA baseline always retains full structural volume dependence."
+            ),
+        ),
+        Argument(
             "use_composition",
             bool,
             optional=True,
