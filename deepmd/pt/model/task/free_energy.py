@@ -629,6 +629,7 @@ class FreeEnergyFittingNet(Fitting):
             inv_std = self.correction.fparam_inv_std
             if avg is not None and inv_std is not None:
                 gauge_state = (gauge_state - avg) * inv_std
+            gauge_state = gauge_state.to(self.prec)
             phase_gauge = self.phase_gauge_network(
                 torch.cat([pooled_descriptor, gauge_state], dim=-1)
             )
