@@ -891,6 +891,9 @@ class Trainer:
                         _pretrained_fitting_type = (
                             _pretrained_model_params.get("fitting_net") or {}
                         ).get("type")
+                        _changed_fitting_type = (
+                            _target_fitting_type != _pretrained_fitting_type
+                        )
                         target_keys = [
                             i
                             for i in _random_state_dict.keys()
@@ -903,6 +906,8 @@ class Trainer:
                             use_random_initialization = _new_fitting and (
                                 ".descriptor." not in item_key
                             )
+                            if _changed_fitting_type and ".fitting_net." in item_key:
+                                use_random_initialization = True
                             # The FES head splits its fitting net in two: a
                             # frozen ``baseline`` holding the pretrained PES
                             # weights, plus a brand-new ``correction`` net (and
