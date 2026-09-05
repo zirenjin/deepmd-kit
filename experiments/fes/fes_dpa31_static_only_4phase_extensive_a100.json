@@ -132,12 +132,10 @@
       ],
       "batch_size": 2,
       "pair_systems": [
-        [
-          "/GenSIvePFS/users/zirenj/fes_experiment_pbe_d3bj/fes_static_only_4phase_extensive/quartz_beta",
-          "/GenSIvePFS/users/zirenj/fes_experiment_pbe_d3bj/fes_static_only_4phase_extensive/cristobalite_beta",
-          "/GenSIvePFS/users/zirenj/fes_experiment_pbe_d3bj/fes_static_only_4phase_extensive/tridymite_p63mmc",
-          "/GenSIvePFS/users/zirenj/fes_experiment_pbe_d3bj/fes_static_only_4phase_extensive/tridymite_c2221"
-        ]
+        "/GenSIvePFS/users/zirenj/fes_experiment_pbe_d3bj/fes_static_only_4phase_extensive/quartz_beta",
+        "/GenSIvePFS/users/zirenj/fes_experiment_pbe_d3bj/fes_static_only_4phase_extensive/cristobalite_beta",
+        "/GenSIvePFS/users/zirenj/fes_experiment_pbe_d3bj/fes_static_only_4phase_extensive/tridymite_p63mmc",
+        "/GenSIvePFS/users/zirenj/fes_experiment_pbe_d3bj/fes_static_only_4phase_extensive/tridymite_c2221"
       ]
     },
     "validation_data": {
@@ -150,12 +148,10 @@
       "batch_size": 2,
       "numb_btch": 4,
       "pair_systems": [
-        [
-          "/GenSIvePFS/users/zirenj/fes_experiment_pbe_d3bj/fes_static_only_4phase_extensive/quartz_beta",
-          "/GenSIvePFS/users/zirenj/fes_experiment_pbe_d3bj/fes_static_only_4phase_extensive/cristobalite_beta",
-          "/GenSIvePFS/users/zirenj/fes_experiment_pbe_d3bj/fes_static_only_4phase_extensive/tridymite_p63mmc",
-          "/GenSIvePFS/users/zirenj/fes_experiment_pbe_d3bj/fes_static_only_4phase_extensive/tridymite_c2221"
-        ]
+        "/GenSIvePFS/users/zirenj/fes_experiment_pbe_d3bj/fes_static_only_4phase_extensive/quartz_beta",
+        "/GenSIvePFS/users/zirenj/fes_experiment_pbe_d3bj/fes_static_only_4phase_extensive/cristobalite_beta",
+        "/GenSIvePFS/users/zirenj/fes_experiment_pbe_d3bj/fes_static_only_4phase_extensive/tridymite_p63mmc",
+        "/GenSIvePFS/users/zirenj/fes_experiment_pbe_d3bj/fes_static_only_4phase_extensive/tridymite_c2221"
       ]
     },
     "numb_steps": 3000,
