@@ -144,6 +144,7 @@ def test_fes_loss_defaults():
     assert loss["loss_func"] == "mse"
     assert loss["metric"] == ["mae", "rmse"]
     assert loss["delta_g_pref"] == 0.0
+    assert loss["phase_mean_g_pref"] == 0.0
 
 
 def test_fes_loss_accepts_its_options():
@@ -154,5 +155,6 @@ def test_fes_loss_accepts_its_options():
             "metric": ["mae"],
             "beta": 2.0,
             "delta_g_pref": 0.0,
+            "phase_mean_g_pref": 0.5,
         },
     )

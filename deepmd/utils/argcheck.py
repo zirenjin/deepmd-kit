@@ -5230,6 +5230,19 @@ def loss_fes() -> list[Argument]:
             doc=doc_delta_g_pref,
         )
     )
+    args.append(
+        Argument(
+            "phase_mean_g_pref",
+            [float, int],
+            optional=True,
+            default=0.0,
+            doc=(
+                "Prefactor of the phase-mean gauge objective. For paired "
+                "batches, compare the mean per-atom G of each phase with its "
+                "reference mean without fitting frame-level absolute noise."
+            ),
+        )
+    )
     return args
 
 
