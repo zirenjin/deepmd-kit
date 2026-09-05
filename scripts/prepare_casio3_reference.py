@@ -22,6 +22,7 @@ def main() -> None:
     curve = raw.iloc[1:, [0, 1, 4]].copy()
     curve.columns = ["temperature_K", "delta_g_tet_minus_cub_eV_per_atom", "delta_g_fit_eV_per_atom"]
     curve = curve.dropna(subset=["temperature_K", "delta_g_tet_minus_cub_eV_per_atom"])
+    curve = curve.sort_values("temperature_K").reset_index(drop=True)
     curve.to_csv(args.output / "delta_g_50GPa.csv", index=False)
 
     # Keep the complete workbook table losslessly for the multi-pressure boundary.
