@@ -331,20 +331,14 @@ class FreeEnergyFittingNet(Fitting):
         temperature_scale = torch.ones(
             (descriptor.shape[0], 1), dtype=descriptor.dtype, device=descriptor.device
         )
-        correction_fparam = fparam
+        if fparam is None:
+            raise ValueError("the FES head requires a state vector in fparam")
+        full_state = fparam.reshape(descriptor.shape[0], self.state_dim).to(self.prec)
+        correction_fparam = full_state
         if self.temperature_basis == "linear_zero_anchor":
-            if fparam is None:
-                raise ValueError("the FES head requires a state vector in fparam")
-            full_state = fparam.reshape(descriptor.shape[0], self.state_dim).to(
-                self.prec
-            )
             temperature_scale = full_state[:, :1] / self.temperature_scale
             correction_fparam = full_state[:, 1:]
         if self.fparam_neuron:
-            if fparam is None:
-                raise ValueError(
-                    "the FES head requires a state vector in fparam; got None."
-                )
             state = correction_fparam.reshape(
                 descriptor.shape[0], self.correction_state_dim
             ).to(self.prec)
