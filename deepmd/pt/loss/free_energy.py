@@ -53,6 +53,7 @@ class FreeEnergyLoss(TaskLoss):
         loss_func: str = "mse",
         metric: list[str] | None = None,
         beta: float = 1.00,
+        absolute_g_pref: float = 1.0,
         delta_g_pref: float = 0.0,
         **kwargs: Any,
     ) -> None:
@@ -74,6 +75,10 @@ class FreeEnergyLoss(TaskLoss):
             Weight of the paired per-atom ``dG`` objective. Requires a
             ``pair_systems`` data loader, which emits phase A followed by phase
             B in each batch. The target is ``G_B/N_B - G_A/N_A``.
+        absolute_g_pref : float
+            Weight of the absolute per-atom G objective. Set to zero for the
+            gauge-free paired objective when only phase-relative free energy is
+            scientifically identifiable.
         """
         super().__init__()
         self.var_name = var_name
@@ -81,6 +86,7 @@ class FreeEnergyLoss(TaskLoss):
         self.loss_func = loss_func
         self.metric = list(metric) if metric is not None else ["mae", "rmse"]
         self.beta = beta
+        self.absolute_g_pref = absolute_g_pref
         self.delta_g_pref = delta_g_pref
 
     @staticmethod
@@ -151,15 +157,18 @@ class FreeEnergyLoss(TaskLoss):
         ref = self._per_atom(label[var_name], model_pred, natoms)
 
         if self.loss_func == "mse":
-            loss = F.mse_loss(pred, ref, reduction="mean")
+            absolute_loss = F.mse_loss(pred, ref, reduction="mean")
         elif self.loss_func == "mae":
-            loss = F.l1_loss(pred, ref, reduction="mean")
+            absolute_loss = F.l1_loss(pred, ref, reduction="mean")
         elif self.loss_func == "smooth_mae":
-            loss = F.smooth_l1_loss(pred, ref, reduction="mean", beta=self.beta)
+            absolute_loss = F.smooth_l1_loss(
+                pred, ref, reduction="mean", beta=self.beta
+            )
         elif self.loss_func == "rmse":
-            loss = torch.sqrt(F.mse_loss(pred, ref, reduction="mean"))
+            absolute_loss = torch.sqrt(F.mse_loss(pred, ref, reduction="mean"))
         else:
             raise RuntimeError(f"Unknown loss function : {self.loss_func}")
+        loss = self.absolute_g_pref * absolute_loss
 
         more_loss = {}
         if self.delta_g_pref > 0.0:
@@ -229,6 +238,7 @@ class FreeEnergyLoss(TaskLoss):
             "loss_func": self.loss_func,
             "metric": self.metric,
             "beta": self.beta,
+            "absolute_g_pref": self.absolute_g_pref,
             "delta_g_pref": self.delta_g_pref,
         }
 

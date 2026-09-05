@@ -5172,6 +5172,18 @@ def loss_fes() -> list[Argument]:
     )
     args.append(
         Argument(
+            "absolute_g_pref",
+            [float, int],
+            optional=True,
+            default=1.0,
+            doc=(
+                "Prefactor of the absolute per-atom G objective. Set to zero "
+                "for the gauge-free paired Delta G objective."
+            ),
+        )
+    )
+    args.append(
+        Argument(
             "delta_g_pref",
             [float, int],
             optional=True,
