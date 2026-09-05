@@ -219,10 +219,11 @@ class FreeEnergyFittingNet(Fitting):
             "mean_max",
             "mean_std",
             "mean_std_max",
+            "type_mean",
         ):
             raise ValueError(
                 "phase_gauge_pooling must be 'mean', 'mean_max', 'mean_std', "
-                "or 'mean_std_max'"
+                "or 'mean_std_max', or 'type_mean'"
             )
         self.phase_gauge_pooling = phase_gauge_pooling
         if phase_gauge_basis not in ("piecewise_linear", "concave"):
@@ -506,7 +507,9 @@ class FreeEnergyFittingNet(Fitting):
         dims = [
             self.dim_descrpt
             * (
-                3
+                self.ntypes
+                if self.phase_gauge_pooling == "type_mean"
+                else 3
                 if self.phase_gauge_pooling == "mean_std_max"
                 else 2
                 if self.phase_gauge_pooling in ("mean_max", "mean_std")
@@ -647,7 +650,19 @@ class FreeEnergyFittingNet(Fitting):
             pooled_descriptor = torch.sum(
                 descriptor.to(self.prec) * atom_mask.unsqueeze(-1), dim=1
             ) / atom_count.unsqueeze(-1)
-            if self.phase_gauge_pooling == "mean_max":
+            if self.phase_gauge_pooling == "type_mean":
+                type_means = []
+                for type_idx in range(self.ntypes):
+                    type_mask = (atype == type_idx).to(self.prec)
+                    type_count = torch.clamp(torch.sum(type_mask, dim=1), min=1.0)
+                    type_means.append(
+                        torch.sum(
+                            descriptor.to(self.prec) * type_mask.unsqueeze(-1), dim=1
+                        )
+                        / type_count.unsqueeze(-1)
+                    )
+                pooled_descriptor = torch.cat(type_means, dim=-1)
+            elif self.phase_gauge_pooling == "mean_max":
                 masked_descriptor = torch.where(
                     atom_mask.unsqueeze(-1) > 0.0,
                     descriptor.to(self.prec),
