@@ -184,10 +184,12 @@ class FreeEnergyFittingNet(Fitting):
             "concave",
             "concave_log",
             "entropy_affine",
+            "concave_entropy",
         ):
             raise ValueError(
                 "temperature_basis must be 'mlp', 'linear_zero_anchor', 'affine', "
-                "or 'concave', 'concave_log', or 'entropy_affine'"
+                "or 'concave', 'concave_log', 'entropy_affine', or "
+                "'concave_entropy'"
             )
         if temperature_scale <= 0.0:
             raise ValueError("temperature_scale must be positive")
@@ -235,6 +237,7 @@ class FreeEnergyFittingNet(Fitting):
             "concave",
             "concave_log",
             "entropy_affine",
+            "concave_entropy",
         ):
             if self.numb_state_fparam < 1:
                 raise ValueError(
@@ -293,6 +296,7 @@ class FreeEnergyFittingNet(Fitting):
                 "affine",
                 "concave",
                 "entropy_affine",
+                "concave_entropy",
                 "concave_log",
             )
             else [1]
@@ -315,7 +319,13 @@ class FreeEnergyFittingNet(Fitting):
             type_map=self.type_map,
             trainable=trainable
             and self.temperature_basis
-            in ("affine", "concave", "concave_log", "entropy_affine"),
+            in (
+                "affine",
+                "concave",
+                "concave_log",
+                "entropy_affine",
+                "concave_entropy",
+            ),
         )
 
         # A positive curvature coefficient gives a thermodynamically concave
@@ -323,7 +333,7 @@ class FreeEnergyFittingNet(Fitting):
         # consistent with non-negative heat capacity at fixed pressure.
         curvature_neuron = (
             self.neuron
-            if self.temperature_basis in ("concave", "concave_log")
+            if self.temperature_basis in ("concave", "concave_log", "concave_entropy")
             else [1]
         )
         self.curvature_correction = InvarFitting(
@@ -343,7 +353,11 @@ class FreeEnergyFittingNet(Fitting):
             exclude_types=self.exclude_types,
             type_map=self.type_map,
             trainable=trainable
-            and self.temperature_basis in ("concave", "concave_log"),
+            and self.temperature_basis in (
+                "concave",
+                "concave_log",
+                "concave_entropy",
+            ),
         )
 
         self.fparam_network = self._build_fparam_network(seed)
@@ -390,6 +404,7 @@ class FreeEnergyFittingNet(Fitting):
                 "affine",
                 "concave",
                 "entropy_affine",
+                "concave_entropy",
             )
         for param in self.curvature_correction.parameters():
             param.requires_grad = self.trainable and self.temperature_basis in (
@@ -535,6 +550,33 @@ class FreeEnergyFittingNet(Fitting):
             )["fes_slope"]
             entropy = torch.nn.functional.softplus(raw_entropy)
             correction = correction - entropy * temperature_scale.unsqueeze(1)
+        elif self.temperature_basis == "concave_entropy":
+            raw_entropy = self.slope_correction(
+                corr_descriptor,
+                atype,
+                gr,
+                g2,
+                h2,
+                correction_fparam,
+                aparam,
+            )["fes_slope"]
+            raw_curvature = self.curvature_correction(
+                corr_descriptor,
+                atype,
+                gr,
+                g2,
+                h2,
+                correction_fparam,
+                aparam,
+            )["fes_curvature"]
+            x = temperature_scale.unsqueeze(1)
+            correction = (
+                correction
+                - torch.nn.functional.softplus(raw_entropy) * x
+                - self.curvature_scale
+                * torch.nn.functional.softplus(raw_curvature)
+                * x.square()
+            )
 
         return {
             "fes_baseline": baseline,
@@ -653,9 +695,10 @@ class FreeEnergyFittingNet(Fitting):
             "concave",
             "concave_log",
             "entropy_affine",
+            "concave_entropy",
         ):
             self.slope_correction.set_case_embd(case_idx)
-        if self.temperature_basis in ("concave", "concave_log"):
+        if self.temperature_basis in ("concave", "concave_log", "concave_entropy"):
             self.curvature_correction.set_case_embd(case_idx)
 
     def compute_input_stats(
@@ -677,6 +720,7 @@ class FreeEnergyFittingNet(Fitting):
             "concave",
             "concave_log",
             "entropy_affine",
+            "concave_entropy",
         ):
             if callable(merged):
                 samples = merged()
@@ -692,7 +736,7 @@ class FreeEnergyFittingNet(Fitting):
                 self.slope_correction.compute_input_stats(
                     reduced, protection, stat_file_path
                 )
-            if self.temperature_basis in ("concave", "concave_log"):
+            if self.temperature_basis in ("concave", "concave_log", "concave_entropy"):
                 self.slope_correction.compute_input_stats(
                     reduced, protection, stat_file_path
                 )

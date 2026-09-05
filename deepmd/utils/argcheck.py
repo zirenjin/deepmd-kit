@@ -3000,7 +3000,8 @@ def fitting_fes() -> list[Argument]:
         "`affine` learns independent intercept and temperature-slope terms; "
         "`concave` additionally enforces non-positive temperature curvature; "
         "`concave_log` uses a thermodynamic -T log(T) curvature basis; "
-        "`entropy_affine` enforces a non-negative entropy coefficient."
+        "`entropy_affine` enforces a non-negative entropy coefficient; "
+        "`concave_entropy` enforces both non-negative entropy and heat capacity."
     )
     doc_fparam_neuron = (
         "Hidden sizes of the state-vector encoder, whose output is concatenated "
