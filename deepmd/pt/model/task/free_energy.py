@@ -183,10 +183,11 @@ class FreeEnergyFittingNet(Fitting):
             "affine",
             "concave",
             "concave_log",
+            "entropy_affine",
         ):
             raise ValueError(
                 "temperature_basis must be 'mlp', 'linear_zero_anchor', 'affine', "
-                "or 'concave' or 'concave_log'"
+                "or 'concave', 'concave_log', or 'entropy_affine'"
             )
         if temperature_scale <= 0.0:
             raise ValueError("temperature_scale must be positive")
@@ -287,7 +288,12 @@ class FreeEnergyFittingNet(Fitting):
         # unrestricted FES behaviour without optional-module TorchScript state.
         slope_neuron = (
             self.neuron
-            if self.temperature_basis in ("affine", "concave", "concave_log")
+            if self.temperature_basis in (
+                "affine",
+                "concave",
+                "entropy_affine",
+                "concave_log",
+            )
             else [1]
         )
         self.slope_correction = InvarFitting(
@@ -307,7 +313,8 @@ class FreeEnergyFittingNet(Fitting):
             exclude_types=self.exclude_types,
             type_map=self.type_map,
             trainable=trainable
-            and self.temperature_basis in ("affine", "concave", "concave_log"),
+            and self.temperature_basis
+            in ("affine", "concave", "concave_log", "entropy_affine"),
         )
 
         # A positive curvature coefficient gives a thermodynamically concave
@@ -381,6 +388,7 @@ class FreeEnergyFittingNet(Fitting):
             param.requires_grad = self.trainable and self.temperature_basis in (
                 "affine",
                 "concave",
+                "entropy_affine",
             )
         for param in self.curvature_correction.parameters():
             param.requires_grad = self.trainable and self.temperature_basis in (
@@ -421,6 +429,7 @@ class FreeEnergyFittingNet(Fitting):
             "affine",
             "concave",
             "concave_log",
+            "entropy_affine",
         ):
             temperature_scale = full_state[:, :1] / self.temperature_scale
             correction_fparam = full_state[:, 1:]
@@ -513,6 +522,18 @@ class FreeEnergyFittingNet(Fitting):
             curvature = torch.nn.functional.softplus(raw_curvature)
             x = temperature_scale.unsqueeze(1)
             correction = correction + slope * x - self.curvature_scale * curvature * x * torch.log(x)
+        elif self.temperature_basis == "entropy_affine":
+            raw_entropy = self.slope_correction(
+                corr_descriptor,
+                atype,
+                gr,
+                g2,
+                h2,
+                correction_fparam,
+                aparam,
+            )["fes_slope"]
+            entropy = torch.nn.functional.softplus(raw_entropy)
+            correction = correction - entropy * temperature_scale.unsqueeze(1)
 
         return {
             "fes_baseline": baseline,
@@ -626,7 +647,12 @@ class FreeEnergyFittingNet(Fitting):
         single frozen reference potential across branches.
         """
         self.correction.set_case_embd(case_idx)
-        if self.temperature_basis in ("affine", "concave", "concave_log"):
+        if self.temperature_basis in (
+            "affine",
+            "concave",
+            "concave_log",
+            "entropy_affine",
+        ):
             self.slope_correction.set_case_embd(case_idx)
         if self.temperature_basis in ("concave", "concave_log"):
             self.curvature_correction.set_case_embd(case_idx)
@@ -649,6 +675,7 @@ class FreeEnergyFittingNet(Fitting):
             "affine",
             "concave",
             "concave_log",
+            "entropy_affine",
         ):
             if callable(merged):
                 samples = merged()
@@ -660,7 +687,7 @@ class FreeEnergyFittingNet(Fitting):
                 item["fparam"] = sample["fparam"][..., 1:]
                 reduced.append(item)
             self.correction.compute_input_stats(reduced, protection, stat_file_path)
-            if self.temperature_basis == "affine":
+            if self.temperature_basis in ("affine", "entropy_affine"):
                 self.slope_correction.compute_input_stats(
                     reduced, protection, stat_file_path
                 )

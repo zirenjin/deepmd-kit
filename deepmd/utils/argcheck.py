@@ -2999,7 +2999,8 @@ def fitting_fes() -> list[Argument]:
         "learned entropy-like coefficient and therefore vanishes at T=0; "
         "`affine` learns independent intercept and temperature-slope terms; "
         "`concave` additionally enforces non-positive temperature curvature; "
-        "`concave_log` uses a thermodynamic -T log(T) curvature basis."
+        "`concave_log` uses a thermodynamic -T log(T) curvature basis; "
+        "`entropy_affine` enforces a non-negative entropy coefficient."
     )
     doc_fparam_neuron = (
         "Hidden sizes of the state-vector encoder, whose output is concatenated "
