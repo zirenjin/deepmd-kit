@@ -71,9 +71,9 @@ class FreeEnergyLoss(TaskLoss):
         beta : float
             The 'beta' parameter of "smooth_mae".
         delta_g_pref : float
-            Reserved for the pairwise ``dG`` term. Must be 0 for now; phase-pair
-            supervision lives outside this loss until the sampler can emit
-            matched (alpha, beta) pairs.
+            Weight of the paired per-atom ``dG`` objective. Requires a
+            ``pair_systems`` data loader, which emits phase A followed by phase
+            B in each batch. The target is ``G_B/N_B - G_A/N_A``.
         """
         super().__init__()
         self.var_name = var_name
@@ -81,11 +81,6 @@ class FreeEnergyLoss(TaskLoss):
         self.loss_func = loss_func
         self.metric = list(metric) if metric is not None else ["mae", "rmse"]
         self.beta = beta
-        if delta_g_pref:
-            raise NotImplementedError(
-                "delta_g_pref > 0 (pairwise dG supervision) is not implemented "
-                "yet; compute dG downstream from the per-atom free energies."
-            )
         self.delta_g_pref = delta_g_pref
 
     @staticmethod
@@ -167,6 +162,24 @@ class FreeEnergyLoss(TaskLoss):
             raise RuntimeError(f"Unknown loss function : {self.loss_func}")
 
         more_loss = {}
+        if self.delta_g_pref > 0.0:
+            if "pair_batch_size" not in label:
+                raise ValueError(
+                    "delta_g_pref > 0 requires training_data.pair_systems"
+                )
+            pair_batch_size = int(label["pair_batch_size"].reshape(-1)[0].item())
+            if pred.shape[0] != 2 * pair_batch_size:
+                raise ValueError(
+                    "paired FES batch must contain phase A followed by phase B"
+                )
+            delta_pred = pred[pair_batch_size:] - pred[:pair_batch_size]
+            delta_ref = ref[pair_batch_size:] - ref[:pair_batch_size]
+            delta_loss = F.mse_loss(delta_pred, delta_ref, reduction="mean")
+            loss = loss + self.delta_g_pref * delta_loss
+            more_loss["delta_mae"] = F.l1_loss(
+                delta_pred, delta_ref, reduction="mean"
+            ).detach()
+            more_loss["delta_rmse"] = torch.sqrt(delta_loss).detach()
         if "mae" in self.metric:
             more_loss["mae"] = F.l1_loss(pred, ref, reduction="mean").detach()
         if "mse" in self.metric:

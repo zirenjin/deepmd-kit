@@ -5277,6 +5277,16 @@ If MPI is used, the value should be considered as the batch size per task.'
             "systems", [list[str], str], optional=False, default=".", doc=doc_systems
         ),
         Argument(
+            "pair_systems",
+            [list[str]],
+            optional=True,
+            default=None,
+            doc=(
+                "Two systems with synchronized frame ordering for paired losses. "
+                "When set, each batch contains both systems and `systems` is ignored."
+            ),
+        ),
+        Argument(
             "rglob_patterns",
             [list[str]],
             optional=True,
@@ -5359,6 +5369,16 @@ def validation_data_args() -> list[
     args = [
         Argument(
             "systems", [list[str], str], optional=False, default=".", doc=doc_systems
+        ),
+        Argument(
+            "pair_systems",
+            [list[str]],
+            optional=True,
+            default=None,
+            doc=(
+                "Two systems with synchronized frame ordering for paired losses. "
+                "When set, each validation batch contains both systems."
+            ),
         ),
         Argument(
             "rglob_patterns",

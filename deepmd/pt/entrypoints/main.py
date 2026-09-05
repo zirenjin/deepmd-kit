@@ -61,6 +61,7 @@ from deepmd.pt.utils import (
 )
 from deepmd.pt.utils.dataloader import (
     DpLoaderSet,
+    PairedDpLoaderSet,
 )
 from deepmd.pt.utils.env import (
     DEVICE,
@@ -233,9 +234,22 @@ def get_trainer(
         def _make_dp_loader_set(
             systems: str | list[str],
             dataset_params: dict[str, Any],
-        ) -> DpLoaderSet:
+        ) -> DpLoaderSet | PairedDpLoaderSet:
             """Create a DpLoaderSet from systems with pattern expansion."""
             patterns = dataset_params.get("rglob_patterns")
+            pair_systems = dataset_params.get("pair_systems")
+            if pair_systems is not None:
+                expanded_pairs = [
+                    process_systems(item, patterns=patterns) for item in pair_systems
+                ]
+                pair_systems = [item[0] for item in expanded_pairs]
+                return PairedDpLoaderSet(
+                    pair_systems,
+                    dataset_params["batch_size"],
+                    model_params_single["type_map"],
+                    seed=rank_seed,
+                    modifier=modifier,
+                )
             systems = process_systems(systems, patterns=patterns)
             return DpLoaderSet(
                 systems,

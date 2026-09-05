@@ -304,6 +304,100 @@ class DpLoaderSet(Dataset):
             system.preload_and_modify_all_data_torch()
 
 
+class PairedDpLoaderSet(Dataset):
+    """Yield synchronized batches from two systems for contrastive FES loss.
+
+    The two systems must expose the same frame ordering (for example, the
+    shared-temperature quartz/cristobalite FES systems). Frames are padded with
+    virtual atoms so one model call can evaluate both phases; the atomic mask
+    in the model keeps padding out of the descriptor reduction.
+    """
+
+    def __init__(
+        self,
+        systems: list[str],
+        batch_size: int,
+        type_map: list[str] | None,
+        seed: int | list[int] | None = None,
+        modifier: BaseModifier | None = None,
+    ) -> None:
+        if len(systems) != 2:
+            raise ValueError("pair_systems must contain exactly two systems")
+        self.systems = [
+            DeepmdDataSetForLoader(system, type_map=type_map, modifier=modifier)
+            for system in systems
+        ]
+        if len(self.systems[0]) != len(self.systems[1]):
+            raise ValueError("paired systems must contain the same number of frames")
+        self.batch_size = max(int(batch_size), 1)
+        self.nframes = len(self.systems[0])
+        self.max_natoms = max(item._natoms for item in self.systems)
+        self.index = [max(1, int(np.ceil(self.nframes / self.batch_size)))]
+        self.total_batch = self.index[0]
+        self._counter = 0
+
+    def __len__(self) -> int:
+        return 1
+
+    @staticmethod
+    def _pad_frame_batch(
+        batch: dict[str, Any], max_natoms: int
+    ) -> dict[str, Any]:
+        natoms = batch["atype"].shape[1]
+        if natoms == max_natoms:
+            return batch
+        pad = max_natoms - natoms
+        batch["coord"] = torch.nn.functional.pad(batch["coord"], (0, 0, 0, pad))
+        batch["atype"] = torch.nn.functional.pad(
+            batch["atype"], (0, pad), value=-1
+        )
+        return batch
+
+    def __getitem__(self, _idx: int) -> dict[str, Any]:
+        start = (self._counter * self.batch_size) % self.nframes
+        self._counter += 1
+        indices = [(start + ii) % self.nframes for ii in range(self.batch_size)]
+        phase_batches = []
+        for system in self.systems:
+            frames = [system[index] for index in indices]
+            phase_batches.append(self._pad_frame_batch(collate_batch(frames), self.max_natoms))
+
+        result: dict[str, Any] = {}
+        first, second = phase_batches
+        for key in first:
+            if key in {"fid", "type"} or key.startswith("find_"):
+                result[key] = first[key]
+                continue
+            if key not in second:
+                raise ValueError(f"paired systems have different data keys: {key}")
+            left, right = first[key], second[key]
+            if isinstance(left, torch.Tensor):
+                result[key] = torch.cat((left, right), dim=0)
+            else:
+                result[key] = left + right
+        result["pair_batch_size"] = torch.tensor(self.batch_size, dtype=torch.int64)
+        result["sid"] = 0
+        result["fid"] = first["fid"] + second["fid"]
+        return result
+
+    def add_data_requirement(self, data_requirement: list[DataRequirementItem]) -> None:
+        for system in self.systems:
+            system.add_data_requirement(data_requirement)
+
+    def preload_and_modify_all_data_torch(self) -> None:
+        for system in self.systems:
+            system.preload_and_modify_all_data_torch()
+
+    def print_summary(self, name: str, prob: list[float]) -> None:
+        log.info(
+            "%s: paired systems %s, frames=%d, batch_size=%d",
+            name,
+            [system.system for system in self.systems],
+            self.nframes,
+            self.batch_size,
+        )
+
+
 def collate_batch(batch: list[dict[str, Any]]) -> dict[str, Any]:
     example = batch[0]
     result = {}
