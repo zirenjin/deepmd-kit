@@ -20,6 +20,9 @@ def read_property(path,natoms):
     lines=[s for s in Path(path).read_text().splitlines() if s.strip() and not s.startswith("#")]
     return float(lines[-1].split()[1])/natoms
 def test_phase(model,phase,data,out):
+    direct=glob.glob(str(out/f"{phase}.property.out.*"))
+    if direct:
+        return np.array([read_property(p,PHASES[phase]) for p in sorted(direct,key=lambda p:int(p.rsplit(".",1)[1]))])
     d=out/"test"/phase; d.mkdir(parents=True,exist_ok=True)
     subprocess.run(["dp","--pt","test","-m",str(model),"-s",str(data/phase),"-d",str(d)],check=True,stdout=(out/f"test_{phase}.log").open("w"),stderr=subprocess.STDOUT)
     direct=glob.glob(str(out/f"{phase}.property.out.*")); files=sorted(direct if direct else glob.glob(str(out/"**"/f"{phase}.property.out.*"),recursive=True),key=lambda p:int(p.rsplit(".",1)[1]))
