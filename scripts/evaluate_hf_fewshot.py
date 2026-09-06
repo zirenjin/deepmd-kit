@@ -22,7 +22,7 @@ def read_property(path,natoms):
 def test_phase(model,phase,data,out):
     d=out/"test"/phase; d.mkdir(parents=True,exist_ok=True)
     subprocess.run(["dp","--pt","test","-m",str(model),"-s",str(data/phase),"-d",str(d)],check=True,stdout=(out/f"test_{phase}.log").open("w"),stderr=subprocess.STDOUT)
-    files=sorted(set(glob.glob(str(out/f"{phase}.property.out.*"))+glob.glob(str(out/"**"/f"{phase}.property.out.*"),recursive=True)),key=lambda p:int(p.rsplit(".",1)[1]))
+    direct=glob.glob(str(out/f"{phase}.property.out.*")); files=sorted(direct if direct else glob.glob(str(out/"**"/f"{phase}.property.out.*"),recursive=True),key=lambda p:int(p.rsplit(".",1)[1]))
     if not files: raise RuntimeError(f"no outputs for {phase}: {d}")
     return np.array([read_property(p,PHASES[phase]) for p in files])
 def main():
