@@ -1296,9 +1296,9 @@ class FreeEnergyFittingNet(Fitting):
                             features = [x, x * x, x * x * x]
                         else:
                             features = [x, x * np.log(x), x * x]
-                        item["fparam"] = np.concatenate(
+                        item["fparam"] = to_torch_tensor(np.concatenate(
                             features + [raw[..., 1:]], axis=-1
-                        )
+                        ))
                     else:
                         item["fparam"] = sample["fparam"][..., 1:]
                     reduced_samples.append(item)
