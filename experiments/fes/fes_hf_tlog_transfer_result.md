@@ -77,10 +77,10 @@ Native DeepProperty was trained as an absolute property model on the same fixed 
 
 | Labels | MAE (eV/atom) | RMSE (eV/atom) | Sign accuracy | Ranking accuracy | First crossing error (K) |
 |---:|---:|---:|---:|---:|---:|
-| 1 | 0.011383 | 0.014492 | 5.4% | 58.1% | 841.0 |
-| 2 | 0.011374 | 0.014484 | 65.1% | 65.4% | 840.0 |
-| 4 | 0.011356 | 0.014465 | 0.2% | 67.4% | 217.5 |
-| 8 | 0.011318 | 0.014427 | 51.5% | 67.1% | 833.5 |
+| 1 | 0.011383 +/- 0.000000 | 0.014492 +/- 0.000000 | 8.3% +/- 7.4% | 59.6% +/- 2.5% | 840.8 +/- 0.8 |
+| 2 | 0.011374 +/- 0.000000 | 0.014484 +/- 0.000000 | 33.2% +/- 26.9% | 59.0% +/- 8.8% | 824.3 +/- 23.4 |
+| 4 | 0.011356 +/- 0.000000 | 0.014465 +/- 0.000000 | 27.7% +/- 21.5% | 55.5% +/- 11.5% | 705.8 +/- 244.2 |
+| 8 | 0.011318 +/- 0.000000 | 0.014427 +/- 0.000000 | 36.4% +/- 20.3% | 57.0% +/- 13.4% | 693.8 +/- 239.3 |
 
 The absolute property baseline produces many spurious crossings in the one-sided setting; the first-crossing statistic is therefore not a reliable transition estimate. Its nearly label-count-independent error and unstable signs show that absolute property fitting does not recover the phase-relative thermodynamics here. This contrasts with the paired, gauge-free structured head.
 
