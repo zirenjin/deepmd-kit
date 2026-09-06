@@ -71,3 +71,22 @@ The baseline uses the frozen DPA descriptor exported by `dp embed`, pooled per p
 | 8 | 0.009546 | 0.011038 | 89.7% | 1671-2007 K |
 
 At 8 labels this simple pooled-DPA baseline is better than interpolation and phase-ID + T in crossing coverage, but remains worse than the structured continuous T-log FES (MAE 0.004641, sign/ranking accuracy 96.1%). The comparison isolates the value of the structured thermodynamic parameterization from the value of the DPA representation alone.
+## Native DeepProperty Baseline
+
+Native DeepProperty was trained as an absolute property model on the same fixed Hf structures, temperature inputs, label subsets, validation grid, DPA checkpoint, and five seeds. It uses `intensive=false` so the target is total free energy; errors below are reported in eV/atom.
+
+| Labels | MAE (eV/atom) | RMSE (eV/atom) | Sign accuracy | Ranking accuracy | First crossing error (K) |
+|---:|---:|---:|---:|---:|---:|
+| 1 | 0.011383 | 0.014492 | 5.4% | 58.1% | 841.0 |
+| 2 | 0.011374 | 0.014484 | 65.1% | 65.4% | 840.0 |
+| 4 | 0.011356 | 0.014465 | 0.2% | 67.4% | 217.5 |
+| 8 | 0.011318 | 0.014427 | 51.5% | 67.1% | 833.5 |
+
+The absolute property baseline produces many spurious crossings in the one-sided setting; the first-crossing statistic is therefore not a reliable transition estimate. Its nearly label-count-independent error and unstable signs show that absolute property fitting does not recover the phase-relative thermodynamics here. This contrasts with the paired, gauge-free structured head.
+
+## Native DeepProperty Reproducibility
+
+- Raw results: `/GenSIvePFS/users/zirenj/fes_experiment_pbe_d3bj/reference/hf_hcp_bcc_pbe/hf_property_fewshot_results.json`
+- Per-seed results: `/GenSIvePFS/users/zirenj/fes_experiment_pbe_d3bj/reference/hf_hcp_bcc_pbe/hf_property_seed{11,23,37,51,67}.json`
+- Configs: `/GenSIvePFS/users/zirenj/fes_experiment_pbe_d3bj/hf_property_fewshot{1,2,4,8}_seed{11,23,37,51,67}.json`
+- Evaluator: `scripts/evaluate_hf_property_fewshot.py`
