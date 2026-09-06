@@ -234,9 +234,8 @@ class FreeEnergyFittingNet(Fitting):
             for ii in range(3)
         ):
             raise ValueError("temperature_knots must contain four increasing values")
-        self.phase_gauge_neuron = torch.jit.annotate(
-            List[int], list(phase_gauge_neuron or [])
-        )
+        self.phase_gauge_neuron = list(phase_gauge_neuron or [])
+        self.has_phase_gauge = bool(self.phase_gauge_neuron)
         if phase_gauge_pooling not in (
             "mean",
             "mean_max",
@@ -769,7 +768,7 @@ class FreeEnergyFittingNet(Fitting):
         phase_gauge = torch.zeros(
             (descriptor.shape[0], 4), dtype=correction.dtype, device=descriptor.device
         )
-        if self.phase_gauge_neuron:
+        if self.has_phase_gauge:
             atom_mask = (atype >= 0).to(self.prec)
             atom_count = torch.clamp(torch.sum(atom_mask, dim=1), min=1.0)
             pooled_input = descriptor.to(self.prec)
@@ -892,7 +891,7 @@ class FreeEnergyFittingNet(Fitting):
         continuous_phase_gauge = torch.zeros(
             (descriptor.shape[0], 1), dtype=correction.dtype, device=descriptor.device
         )
-        if self.phase_gauge_neuron and self.temperature_basis != "piecewise_linear":
+        if self.has_phase_gauge and self.temperature_basis != "piecewise_linear":
             x = temperature_scale
             intercept = phase_gauge[:, 0:1]
             slope = phase_gauge[:, 1:2]
@@ -949,7 +948,7 @@ class FreeEnergyFittingNet(Fitting):
                 knot_1 = self._center_local_correction(knot_1, atype)
                 knot_2 = self._center_local_correction(knot_2, atype)
                 knot_3 = self._center_local_correction(knot_3, atype)
-            if self.phase_gauge_neuron:
+            if self.has_phase_gauge:
                 atom_count = torch.clamp(
                     torch.sum((atype >= 0).to(correction.dtype), dim=1), min=1.0
                 ).reshape(-1, 1, 1)
@@ -1107,7 +1106,7 @@ class FreeEnergyFittingNet(Fitting):
                 * x.square()
             )
 
-        if self.phase_gauge_neuron and self.temperature_basis != "piecewise_linear":
+        if self.has_phase_gauge and self.temperature_basis != "piecewise_linear":
             atom_count = torch.clamp(
                 torch.sum((atype >= 0).to(correction.dtype), dim=1), min=1.0
             ).reshape(-1, 1, 1)
