@@ -693,6 +693,8 @@ class FreeEnergyFittingNet(Fitting):
             "polynomial",
             "tlog_polynomial",
             "piecewise_linear",
+            "anchored_polynomial",
+            "anchored_tlog_polynomial",
         ):
             temperature_scale = full_state[:, :1] / self.temperature_scale
             correction_fparam = full_state[:, 1:]
