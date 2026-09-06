@@ -233,7 +233,9 @@ class FreeEnergyFittingNet(Fitting):
             for ii in range(3)
         ):
             raise ValueError("temperature_knots must contain four increasing values")
-        self.phase_gauge_neuron = list(phase_gauge_neuron or [])
+        self.phase_gauge_neuron = torch.jit.annotate(
+            list[int], list(phase_gauge_neuron or [])
+        )
         if phase_gauge_pooling not in (
             "mean",
             "mean_max",
