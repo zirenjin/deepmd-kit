@@ -43,3 +43,17 @@ Using the same one-sided labels and piecewise linear interpolation with constant
 | 8 | 0.010584 | 0.013948 | 0.6704 | Missing |
 
 The continuous T-log head is worse than this interpolation baseline at 1, 2, and 4 labels, but is better at 8 labels and is the only method here that produces a single crossing in all 5 seeds. The result should therefore be interpreted as partial transfer, not a general few-shot win over interpolation.
+
+
+## Phase-ID + Temperature MLP Baseline
+
+A two-layer MLP receives only normalized temperature and a binary phase ID; it does not receive DPA descriptors or structure information. It is trained on the same absolute G labels and evaluated on the same held-out grid.
+
+| Labels | MAE (eV/atom) | RMSE (eV/atom) | Sign / ranking accuracy | Predicted crossing range (K) |
+|---:|---:|---:|---:|---|
+| 1 | 0.028589 | 0.031599 | 67.5% | one seed: 1526 K; four missing |
+| 2 | 0.006810 | 0.008741 | 83.9% | 1658-1847 K |
+| 4 | 0.008366 | 0.011280 | 82.5% | 1662-1728 K |
+| 8 | 0.008149 | 0.011197 | 83.5% | 1672-1743 K |
+
+The phase-ID baseline outperforms the T-log FES at 2 and 4 labels, but not at 8 labels. Its predicted crossings are less stable and remain systematically below the 1919 K reference. This baseline is a temperature/function-fitting control rather than evidence of transferable structural information.
