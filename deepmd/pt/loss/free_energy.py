@@ -207,9 +207,12 @@ class FreeEnergyLoss(TaskLoss):
                     "phase_mean_g_pref > 0 requires training_data.pair_systems"
                 )
             pair_batch_size = int(label["pair_batch_size"].reshape(-1)[0].item())
-            if pred.shape[0] != 2 * pair_batch_size:
+            pair_phase_count = int(
+                label.get("pair_phase_count", torch.tensor(2)).reshape(-1)[0].item()
+            )
+            if pred.shape[0] != pair_phase_count * pair_batch_size:
                 raise ValueError(
-                    "paired FES batch must contain phase A followed by phase B"
+                    "paired FES batch has inconsistent phase metadata"
                 )
             pred_phases = pred.reshape(pair_phase_count, pair_batch_size, -1)
             ref_phases = ref.reshape(pair_phase_count, pair_batch_size, -1)
