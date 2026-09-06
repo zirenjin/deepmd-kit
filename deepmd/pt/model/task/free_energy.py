@@ -836,7 +836,7 @@ class FreeEnergyFittingNet(Fitting):
                 gauge_state = (gauge_state - avg) * inv_std
             gauge_state = gauge_state.to(self.prec)
             gauge_input = torch.cat([pooled_descriptor, gauge_state], dim=-1)
-            gauge_input = gauge_input.to(self.phase_gauge_network[0].weight.dtype)
+            gauge_input = gauge_input.to(self.prec)
             phase_gauge = self.phase_gauge_network(
                 gauge_input
             )
