@@ -57,3 +57,17 @@ A two-layer MLP receives only normalized temperature and a binary phase ID; it d
 | 8 | 0.008149 | 0.011197 | 83.5% | 1672-1743 K |
 
 The phase-ID baseline outperforms the T-log FES at 2 and 4 labels, but not at 8 labels. Its predicted crossings are less stable and remain systematically below the 1919 K reference. This baseline is a temperature/function-fitting control rather than evidence of transferable structural information.
+
+
+## Simple Pooled-DPA MLP Baseline
+
+The baseline uses the frozen DPA descriptor exported by `dp embed`, pooled per phase with `[mean, std, max]`, plus normalized temperature and a binary phase indicator. It has no FES-specific piecewise or T-log basis and is trained directly on absolute G labels.
+
+| Labels | MAE (eV/atom) | RMSE (eV/atom) | Sign / ranking accuracy | Predicted crossing range (K) |
+|---:|---:|---:|---:|---|
+| 1 | 0.024943 | 0.027965 | 67.2% | Missing (5/5) |
+| 2 | 0.016557 | 0.018117 | 66.6% | 1484-1723 K; one missing |
+| 4 | 0.018674 | 0.021529 | 67.2% | 1502-1711 K; one missing |
+| 8 | 0.009546 | 0.011038 | 89.7% | 1671-2007 K |
+
+At 8 labels this simple pooled-DPA baseline is better than interpolation and phase-ID + T in crossing coverage, but remains worse than the structured continuous T-log FES (MAE 0.004641, sign/ranking accuracy 96.1%). The comparison isolates the value of the structured thermodynamic parameterization from the value of the DPA representation alone.
