@@ -22,6 +22,7 @@ import logging
 import numpy as np
 from typing import (
     Any,
+    List,
 )
 
 import torch
@@ -234,7 +235,7 @@ class FreeEnergyFittingNet(Fitting):
         ):
             raise ValueError("temperature_knots must contain four increasing values")
         self.phase_gauge_neuron = torch.jit.annotate(
-            list[int], list(phase_gauge_neuron or [])
+            List[int], list(phase_gauge_neuron or [])
         )
         if phase_gauge_pooling not in (
             "mean",
