@@ -3006,7 +3006,7 @@ def fitting_fes() -> list[Argument]:
         "`tlog_polynomial` uses a system-independent T log(T) plus quadratic basis; "
         "continuous_polynomial and continuous_tlog_polynomial expose continuous "
         "basis features to a shared scalar residual regressor; piecewise_linear "
-        "uses fixed thermodynamic temperature knots; anchored_polynomial and "
+        "uses fixed thermodynamic temperature knots; anchored_quadratic, anchored_cubic, anchored_polynomial, and "
         "anchored_tlog_polynomial use a reference-anchored coefficient generator."
     )
     doc_fparam_neuron = (
