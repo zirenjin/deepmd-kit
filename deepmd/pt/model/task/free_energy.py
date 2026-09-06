@@ -1273,6 +1273,10 @@ class FreeEnergyFittingNet(Fitting):
             "piecewise_linear",
             "continuous_polynomial",
             "continuous_tlog_polynomial",
+            "anchored_quadratic",
+            "anchored_polynomial",
+            "anchored_cubic",
+            "anchored_tlog_polynomial",
         ):
             def reduce_samples(samples: list[dict]) -> list[dict]:
                 reduced_samples = []
@@ -1281,6 +1285,10 @@ class FreeEnergyFittingNet(Fitting):
                     if self.temperature_basis in (
                         "continuous_polynomial",
                         "continuous_tlog_polynomial",
+                        "anchored_quadratic",
+                        "anchored_polynomial",
+                        "anchored_cubic",
+                        "anchored_tlog_polynomial",
                     ):
                         raw = np.asarray(sample["fparam"])
                         x = raw[..., 0:1] / self.temperature_scale
