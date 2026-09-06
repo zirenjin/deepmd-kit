@@ -3091,6 +3091,13 @@ def fitting_fes() -> list[Argument]:
             doc="Scale in kelvin for temperature-basis coordinates.",
         ),
         Argument(
+            "reference_temperature",
+            [float, int],
+            optional=True,
+            default=1000.0,
+            doc="Reference temperature in kelvin for anchored continuous bases.",
+        ),
+        Argument(
             "curvature_scale",
             [float, int],
             optional=True,

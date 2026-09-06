@@ -148,6 +148,7 @@ class FreeEnergyFittingNet(Fitting):
         use_composition: bool = True,
         temperature_basis: str = "mlp",
         temperature_scale: float = 1000.0,
+        reference_temperature: float = 1000.0,
         curvature_scale: float = 1.0e-2,
         concavity_mix: float = 0.05,
         temperature_knots: list[float] | None = None,
@@ -197,12 +198,15 @@ class FreeEnergyFittingNet(Fitting):
             "polynomial",
             "tlog_polynomial",
             "piecewise_linear",
+            "anchored_polynomial",
+            "anchored_tlog_polynomial",
         ):
             raise ValueError(
                 "temperature_basis must be 'mlp', 'linear_zero_anchor', 'affine', "
                 "or 'concave', 'concave_log', 'entropy_affine', or "
                 "'concave_entropy', 'polynomial', or 'tlog_polynomial', "
-                "or 'piecewise_linear'"
+                "or 'piecewise_linear', 'anchored_polynomial', or "
+                "'anchored_tlog_polynomial'"
             )
         if temperature_scale <= 0.0:
             raise ValueError("temperature_scale must be positive")
@@ -212,6 +216,9 @@ class FreeEnergyFittingNet(Fitting):
             raise ValueError("concavity_mix must be between zero and one")
         self.temperature_basis = temperature_basis
         self.temperature_scale = float(temperature_scale)
+        if reference_temperature <= 0.0:
+            raise ValueError("reference_temperature must be positive")
+        self.reference_temperature = float(reference_temperature)
         self.curvature_scale = float(curvature_scale)
         self.concavity_mix = float(concavity_mix)
         self.temperature_knots = list(
@@ -250,8 +257,11 @@ class FreeEnergyFittingNet(Fitting):
         self.phase_gauge_only = bool(phase_gauge_only)
         if self.phase_gauge_only and not self.phase_gauge_neuron:
             raise ValueError("phase_gauge_only requires phase_gauge_neuron")
-        if self.phase_gauge_only and self.temperature_basis != "piecewise_linear":
-            raise ValueError("phase_gauge_only requires temperature_basis='piecewise_linear'")
+        if self.phase_gauge_only and self.temperature_basis not in (
+            "piecewise_linear", "polynomial", "tlog_polynomial",
+            "anchored_polynomial", "anchored_tlog_polynomial",
+        ):
+            raise ValueError("phase_gauge_only requires a compatible temperature basis")
         self.center_local_correction = bool(center_local_correction)
         if self.center_local_correction and not self.phase_gauge_neuron:
             raise ValueError(
@@ -300,6 +310,8 @@ class FreeEnergyFittingNet(Fitting):
             "polynomial",
             "tlog_polynomial",
             "piecewise_linear",
+            "anchored_polynomial",
+            "anchored_tlog_polynomial",
         ):
             if self.numb_state_fparam < 1:
                 raise ValueError(
@@ -351,11 +363,11 @@ class FreeEnergyFittingNet(Fitting):
         )
         knot_neuron = (
             self.neuron
-            if self.temperature_basis in ("piecewise_linear", "polynomial", "tlog_polynomial")
+            if self.temperature_basis in ("piecewise_linear", "polynomial", "tlog_polynomial", "anchored_polynomial", "anchored_tlog_polynomial")
             else [1]
         )
         knot_trainable = trainable and self.temperature_basis in (
-            "piecewise_linear", "polynomial", "tlog_polynomial"
+            "piecewise_linear", "polynomial", "tlog_polynomial", "anchored_polynomial", "anchored_tlog_polynomial"
         )
         self.knot_correction_1 = InvarFitting(
             var_name="fes_knot_1",
@@ -611,7 +623,7 @@ class FreeEnergyFittingNet(Fitting):
             param.requires_grad = self.trainable and self.temperature_basis == "piecewise_linear"
         for param in self.knot_correction_3.parameters():
             param.requires_grad = self.trainable and self.temperature_basis in (
-                "piecewise_linear", "polynomial", "tlog_polynomial"
+                "piecewise_linear", "polynomial", "tlog_polynomial", "anchored_polynomial", "anchored_tlog_polynomial"
             )
         for param in self.slope_correction.parameters():
             param.requires_grad = self.trainable and self.temperature_basis in (
@@ -621,6 +633,8 @@ class FreeEnergyFittingNet(Fitting):
                 "concave_entropy",
                 "polynomial",
                 "tlog_polynomial",
+                "anchored_polynomial",
+                "anchored_tlog_polynomial",
             )
         for param in self.curvature_correction.parameters():
             param.requires_grad = self.trainable and self.temperature_basis in (
@@ -628,6 +642,8 @@ class FreeEnergyFittingNet(Fitting):
                 "concave_log",
                 "polynomial",
                 "tlog_polynomial",
+                "anchored_polynomial",
+                "anchored_tlog_polynomial",
             )
         for param in self.fparam_network.parameters():
             param.requires_grad = self.trainable
@@ -863,6 +879,17 @@ class FreeEnergyFittingNet(Fitting):
                     intercept + slope * x + phase_gauge[:, 2:3] * x * torch.log(x)
                     + phase_gauge[:, 3:4] * x.square()
                 )
+            elif self.temperature_basis in ("anchored_polynomial", "anchored_tlog_polynomial"):
+                xr = self.reference_temperature / self.temperature_scale
+                x_r = torch.full_like(x, xr)
+                if self.temperature_basis == "anchored_polynomial":
+                    continuous_phase_gauge = (intercept + slope * (x - x_r)
+                        + phase_gauge[:, 2:3] * (x.square() - x_r.square())
+                        + phase_gauge[:, 3:4] * (x.pow(3) - x_r.pow(3)))
+                else:
+                    continuous_phase_gauge = (intercept + slope * (x - x_r)
+                        + phase_gauge[:, 2:3] * (x * torch.log(x) - x_r * torch.log(x_r))
+                        + phase_gauge[:, 3:4] * (x.square() - x_r.square()))
             elif self.temperature_basis == "affine":
                 continuous_phase_gauge = intercept + slope * x
             elif self.temperature_basis == "concave":
@@ -924,7 +951,7 @@ class FreeEnergyFittingNet(Fitting):
                 + knot_2 * w2.unsqueeze(1)
                 + knot_3 * w3.unsqueeze(1)
             )
-        elif self.temperature_basis in ("polynomial", "tlog_polynomial"):
+        elif self.temperature_basis in ("polynomial", "tlog_polynomial", "anchored_polynomial", "anchored_tlog_polynomial"):
             slope = self.slope_correction(
                 corr_descriptor, atype, gr, g2, h2, correction_fparam, aparam
             )["fes_slope"]
@@ -935,8 +962,17 @@ class FreeEnergyFittingNet(Fitting):
                 corr_descriptor, atype, gr, g2, h2, correction_fparam, aparam
             )["fes_knot_3"]
             x = temperature_scale.unsqueeze(1)
-            if self.temperature_basis == "polynomial":
-                correction = correction + slope * x + curvature * x.square() + cubic * x.pow(3)
+            if self.temperature_basis in ("polynomial", "anchored_polynomial"):
+                if self.temperature_basis == "anchored_polynomial":
+                    xr = self.reference_temperature / self.temperature_scale
+                    x_r = torch.full_like(x, xr)
+                    correction = correction + slope * (x - x_r) + curvature * (x.square() - x_r.square()) + cubic * (x.pow(3) - x_r.pow(3))
+                else:
+                    correction = correction + slope * x + curvature * x.square() + cubic * x.pow(3)
+            elif self.temperature_basis == "anchored_tlog_polynomial":
+                xr = self.reference_temperature / self.temperature_scale
+                x_r = torch.full_like(x, xr)
+                correction = correction + slope * (x - x_r) + curvature * (x * torch.log(x) - x_r * torch.log(x_r)) + cubic * (x.square() - x_r.square())
             else:
                 correction = correction + slope * x + curvature * x * torch.log(x) + cubic * x.square()
         elif self.temperature_basis == "linear_zero_anchor":
@@ -1163,7 +1199,7 @@ class FreeEnergyFittingNet(Fitting):
         single frozen reference potential across branches.
         """
         self.correction.set_case_embd(case_idx)
-        if self.temperature_basis in ("piecewise_linear", "polynomial", "tlog_polynomial") or self.phase_gauge_neuron:
+        if self.temperature_basis in ("piecewise_linear", "polynomial", "tlog_polynomial", "anchored_polynomial", "anchored_tlog_polynomial") or self.phase_gauge_neuron:
             self.knot_correction_1.set_case_embd(case_idx)
             self.knot_correction_2.set_case_embd(case_idx)
             self.knot_correction_3.set_case_embd(case_idx)
@@ -1233,7 +1269,7 @@ class FreeEnergyFittingNet(Fitting):
                 self.curvature_correction.compute_input_stats(
                     reduced, protection, stat_file_path
                 )
-            if self.temperature_basis in ("piecewise_linear", "polynomial", "tlog_polynomial"):
+            if self.temperature_basis in ("piecewise_linear", "polynomial", "tlog_polynomial", "anchored_polynomial", "anchored_tlog_polynomial"):
                 self.knot_correction_1.compute_input_stats(
                     reduced, protection, stat_file_path
                 )
@@ -1294,6 +1330,7 @@ class FreeEnergyFittingNet(Fitting):
             "use_composition": self.use_composition,
             "temperature_basis": self.temperature_basis,
             "temperature_scale": self.temperature_scale,
+            "reference_temperature": self.reference_temperature,
             "curvature_scale": self.curvature_scale,
             "temperature_knots": self.temperature_knots,
             "phase_gauge_neuron": self.phase_gauge_neuron,
