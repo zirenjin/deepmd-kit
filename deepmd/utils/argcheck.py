@@ -3004,7 +3004,10 @@ def fitting_fes() -> list[Argument]:
         "`concave_entropy` enforces both non-negative entropy and heat capacity; "
         "`polynomial` uses a system-independent cubic basis in T/1000 K; "
         "`tlog_polynomial` uses a system-independent T log(T) plus quadratic basis; "
-        "`piecewise_linear` uses fixed thermodynamic temperature knots."
+        "continuous_polynomial and continuous_tlog_polynomial expose continuous "
+        "basis features to a shared scalar residual regressor; piecewise_linear "
+        "uses fixed thermodynamic temperature knots; anchored_polynomial and "
+        "anchored_tlog_polynomial use a reference-anchored coefficient generator."
     )
     doc_fparam_neuron = (
         "Hidden sizes of the state-vector encoder, whose output is concatenated "

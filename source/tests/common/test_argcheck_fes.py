@@ -103,6 +103,16 @@ def test_fes_accepts_its_own_options():
     )
 
 
+def test_fes_accepts_continuous_and_anchored_bases():
+    for basis in (
+        "continuous_polynomial",
+        "continuous_tlog_polynomial",
+        "anchored_polynomial",
+        "anchored_tlog_polynomial",
+    ):
+        _check(fitting_fes(), _fitting(temperature_basis=basis))
+
+
 @pytest.mark.parametrize(
     "unsupported",
     [
@@ -120,6 +130,7 @@ def test_fes_accepts_its_own_options():
         "some_future_typo",
     ],
 )
+
 def test_fes_rejects_unsupported_options(unsupported):
     with pytest.raises(Exception):
         _check(fitting_fes(), _fitting(**{unsupported: 1}))

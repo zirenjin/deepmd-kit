@@ -252,6 +252,36 @@ def test_gradients_reach_only_the_correction():
     )
 
 
+
+def test_continuous_polynomial_basis_routes_explicit_temperature_features():
+    model = _make_model(temperature_basis="continuous_polynomial")
+    fitting = model.get_fitting_net()
+    assert fitting.correction_state_dim == 7
+    coord, atype, box, fparam = _batch(nframes=2)
+    out = model(coord, atype, box=box, fparam=fparam)
+    assert out["free_energy"].shape == (2, 1)
+    assert torch.isfinite(out["free_energy"]).all()
+
+
+@pytest.mark.parametrize(
+    "basis",
+    ["anchored_polynomial", "anchored_tlog_polynomial"],
+)
+def test_anchored_basis_roundtrip_preserves_configuration(basis):
+    model = _make_model(
+        temperature_basis=basis,
+        reference_temperature=900.0,
+        phase_gauge_neuron=[8],
+        phase_gauge_only=True,
+    )
+    fitting = model.get_fitting_net()
+    data = fitting.serialize()
+    assert data["temperature_basis"] == basis
+    assert data["reference_temperature"] == 900.0
+    restored = FreeEnergyFittingNet.deserialize(data)
+    assert restored.temperature_basis == basis
+    assert restored.reference_temperature == 900.0
+
 # --- the two fparam widths -------------------------------------------
 
 

@@ -19,6 +19,7 @@ The head owns two stock deepmd fitting nets over one shared descriptor pass:
 """
 
 import logging
+import numpy as np
 from typing import (
     Any,
 )
@@ -200,13 +201,16 @@ class FreeEnergyFittingNet(Fitting):
             "piecewise_linear",
             "anchored_polynomial",
             "anchored_tlog_polynomial",
+            "continuous_polynomial",
+            "continuous_tlog_polynomial",
         ):
             raise ValueError(
                 "temperature_basis must be 'mlp', 'linear_zero_anchor', 'affine', "
                 "or 'concave', 'concave_log', 'entropy_affine', or "
                 "'concave_entropy', 'polynomial', or 'tlog_polynomial', "
                 "or 'piecewise_linear', 'anchored_polynomial', or "
-                "'anchored_tlog_polynomial'"
+                "'anchored_tlog_polynomial', 'continuous_polynomial', or "
+                "'continuous_tlog_polynomial'"
             )
         if temperature_scale <= 0.0:
             raise ValueError("temperature_scale must be positive")
@@ -312,12 +316,16 @@ class FreeEnergyFittingNet(Fitting):
             "piecewise_linear",
             "anchored_polynomial",
             "anchored_tlog_polynomial",
+            "continuous_polynomial",
+            "continuous_tlog_polynomial",
         ):
             if self.numb_state_fparam < 1:
                 raise ValueError(
                     "temperature-dependent FES bases require temperature in fparam[:, 0]"
                 )
             self.correction_state_dim -= 1
+        if self.temperature_basis in ("continuous_polynomial", "continuous_tlog_polynomial"):
+            self.correction_state_dim += 3
 
         baseline_cfg = dict(baseline or {})
         for forbidden in ("numb_fparam", "numb_aparam"):
@@ -695,15 +703,31 @@ class FreeEnergyFittingNet(Fitting):
             "piecewise_linear",
             "anchored_polynomial",
             "anchored_tlog_polynomial",
+            "continuous_polynomial",
+            "continuous_tlog_polynomial",
         ):
             temperature_scale = full_state[:, :1] / self.temperature_scale
-            correction_fparam = full_state[:, 1:]
+            if self.temperature_basis == "continuous_polynomial":
+                correction_fparam = torch.cat(
+                    (temperature_scale, temperature_scale.square(), temperature_scale.pow(3), full_state[:, 1:]),
+                    dim=1,
+                )
+            elif self.temperature_basis == "continuous_tlog_polynomial":
+                correction_fparam = torch.cat(
+                    (temperature_scale, temperature_scale * torch.log(temperature_scale), temperature_scale.square(), full_state[:, 1:]),
+                    dim=1,
+                )
+            else:
+                correction_fparam = full_state[:, 1:]
         if not self.use_volume_in_correction and self.volume_mode != "none":
             # Preserve the parameter width for checkpoint compatibility, but
             # replace the derived volume by its training mean before it enters
             # any thermodynamic correction network.
             correction_fparam = correction_fparam.clone()
-            volume_index = 1 if self.temperature_basis != "mlp" else 2
+            if self.temperature_basis in ("continuous_polynomial", "continuous_tlog_polynomial"):
+                volume_index = 4
+            else:
+                volume_index = 1 if self.temperature_basis != "mlp" else 2
             if self.correction.fparam_avg is not None:
                 correction_fparam[:, volume_index : volume_index + 1] = (
                     self.correction.fparam_avg[1]
@@ -1241,12 +1265,28 @@ class FreeEnergyFittingNet(Fitting):
             "polynomial",
             "tlog_polynomial",
             "piecewise_linear",
+            "continuous_polynomial",
+            "continuous_tlog_polynomial",
         ):
             def reduce_samples(samples: list[dict]) -> list[dict]:
                 reduced_samples = []
                 for sample in samples:
                     item = dict(sample)
-                    item["fparam"] = sample["fparam"][..., 1:]
+                    if self.temperature_basis in (
+                        "continuous_polynomial",
+                        "continuous_tlog_polynomial",
+                    ):
+                        raw = np.asarray(sample["fparam"])
+                        x = raw[..., 0:1] / self.temperature_scale
+                        if self.temperature_basis == "continuous_polynomial":
+                            features = [x, x * x, x * x * x]
+                        else:
+                            features = [x, x * np.log(x), x * x]
+                        item["fparam"] = np.concatenate(
+                            features + [raw[..., 1:]], axis=-1
+                        )
+                    else:
+                        item["fparam"] = sample["fparam"][..., 1:]
                     reduced_samples.append(item)
                 return reduced_samples
 
