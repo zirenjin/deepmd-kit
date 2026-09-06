@@ -29,3 +29,17 @@ The system-independent continuous T-log basis substantially improves material tr
 - Checkpoint root: `/GenSIvePFS/users/zirenj/fes_experiment_pbe_d3bj/hf_tlog_fes_fewshot{1,2,4,8}_seed{11,23,37,51,67}`
 - Evaluator: `scripts/evaluate_hf_tlog_fewshot.py`
 - Reference: `/GenSIvePFS/users/zirenj/fes_experiment_pbe_d3bj/reference/hf_hcp_bcc_pbe/free_energy_common.csv`
+
+
+## Interpolation Baseline
+
+Using the same one-sided labels and piecewise linear interpolation with constant extrapolation outside the labeled range:
+
+| Labels | Interpolation MAE (eV/atom) | Interpolation RMSE (eV/atom) | Sign accuracy | Crossing |
+|---:|---:|---:|---:|---|
+| 1 | 0.023835 | 0.026673 | 0.6723 | Missing |
+| 2 | 0.015381 | 0.018799 | 0.6720 | Missing |
+| 4 | 0.011958 | 0.015383 | 0.6715 | Missing |
+| 8 | 0.010584 | 0.013948 | 0.6704 | Missing |
+
+The continuous T-log head is worse than this interpolation baseline at 1, 2, and 4 labels, but is better at 8 labels and is the only method here that produces a single crossing in all 5 seeds. The result should therefore be interpreted as partial transfer, not a general few-shot win over interpolation.
