@@ -1285,10 +1285,6 @@ class FreeEnergyFittingNet(Fitting):
                     if self.temperature_basis in (
                         "continuous_polynomial",
                         "continuous_tlog_polynomial",
-                        "anchored_quadratic",
-                        "anchored_polynomial",
-                        "anchored_cubic",
-                        "anchored_tlog_polynomial",
                     ):
                         raw = to_numpy_array(sample["fparam"])
                         x = raw[..., 0:1] / self.temperature_scale
