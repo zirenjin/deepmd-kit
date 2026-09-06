@@ -1290,7 +1290,7 @@ class FreeEnergyFittingNet(Fitting):
                         "anchored_cubic",
                         "anchored_tlog_polynomial",
                     ):
-                        raw = np.asarray(sample["fparam"])
+                        raw = to_numpy_array(sample["fparam"])
                         x = raw[..., 0:1] / self.temperature_scale
                         if self.temperature_basis == "continuous_polynomial":
                             features = [x, x * x, x * x * x]
