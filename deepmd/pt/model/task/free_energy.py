@@ -858,20 +858,19 @@ class FreeEnergyFittingNet(Fitting):
             q = torch.zeros_like(g_r)
         slope_contribution = -(x - x_r) * s_r
         total = g_r + slope_contribution + q
-        correction = (
-            total.unsqueeze(1) / atom_count.reshape(-1, 1, 1)
-        ).expand(-1, descriptor.shape[1], -1)
+        # The model-level reducer sums atomic outputs before FESLoss divides by
+        # the real atom count.  Keep RSTA coefficients in the same per-atom
+        # convention as the legacy fitting net; dividing here would introduce
+        # a second atom-count normalization and make absolute-G optimization
+        # unnecessarily slow for large phases.
+        correction = total.unsqueeze(1).expand(-1, descriptor.shape[1], -1)
         return {
             "fes_baseline": baseline,
-            "rsta_reference": (g_r.unsqueeze(1) / atom_count.reshape(-1, 1, 1)).expand(
+            "rsta_reference": g_r.unsqueeze(1).expand(-1, descriptor.shape[1], -1),
+            "rsta_slope": slope_contribution.unsqueeze(1).expand(
                 -1, descriptor.shape[1], -1
             ),
-            "rsta_slope": (
-                slope_contribution.unsqueeze(1) / atom_count.reshape(-1, 1, 1)
-            ).expand(-1, descriptor.shape[1], -1),
-            "rsta_remainder": (q.unsqueeze(1) / atom_count.reshape(-1, 1, 1)).expand(
-                -1, descriptor.shape[1], -1
-            ),
+            "rsta_remainder": q.unsqueeze(1).expand(-1, descriptor.shape[1], -1),
             "fes_correction": correction,
             self.var_name: correction,
         }
