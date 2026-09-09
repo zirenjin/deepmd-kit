@@ -127,6 +127,13 @@ class FreeEnergyFittingNet(Fitting):
         removes the baseline from the final output, and ``feature`` appends the
         atomic baseline energy to the correction input without adding it with a
         fixed coefficient.
+    rsta_energy_feature : str
+        RSTA energy feature mode: ``per_atom`` for E-full or ``none`` for
+        E-zonly.
+    rsta_use_remainder : bool
+        Whether to include the reference-anchored nonlinear q(T) remainder.
+    rsta_pooling : str
+        Invariant pooling used by the RSTA global branches.
     trainable : bool
         Whether the correction net and the state encoder are trainable.
     default_fparam : list[float], optional
@@ -172,6 +179,9 @@ class FreeEnergyFittingNet(Fitting):
         baseline: dict[str, Any] | None = None,
         freeze_baseline: bool = True,
         baseline_mode: str = "additive",
+        rsta_energy_feature: str = "per_atom",
+        rsta_use_remainder: bool = True,
+        rsta_pooling: str = "mean_std_max",
         trainable: bool = True,
         default_fparam: list[float] | None = None,
         dim_case_embd: int = 0,
@@ -210,6 +220,7 @@ class FreeEnergyFittingNet(Fitting):
             "anchored_tlog_polynomial",
             "continuous_polynomial",
             "continuous_tlog_polynomial",
+            "rsta",
         ):
             raise ValueError(
                 "temperature_basis must be 'mlp', 'linear_zero_anchor', 'affine', "
@@ -217,7 +228,7 @@ class FreeEnergyFittingNet(Fitting):
                 "'concave_entropy', 'polynomial', or 'tlog_polynomial', "
                 "or 'piecewise_linear', 'anchored_polynomial', or "
                 "'anchored_tlog_polynomial', 'continuous_polynomial', or "
-                "'continuous_tlog_polynomial'"
+                "'continuous_tlog_polynomial', or 'rsta'"
             )
         if temperature_scale <= 0.0:
             raise ValueError("temperature_scale must be positive")
@@ -291,6 +302,25 @@ class FreeEnergyFittingNet(Fitting):
                 "baseline_mode must be 'additive', 'none', or 'feature'"
             )
         self.baseline_mode = baseline_mode
+        if rsta_energy_feature not in ("per_atom", "none"):
+            raise ValueError("rsta_energy_feature must be 'per_atom' or 'none'")
+        if rsta_pooling not in ("mean", "mean_max", "mean_std", "mean_std_max", "type_mean"):
+            raise ValueError(
+                "rsta_pooling must be 'mean', 'mean_max', 'mean_std', 'mean_std_max', or 'type_mean'"
+            )
+        if temperature_basis == "rsta" and reference_temperature != 1300.0:
+            raise ValueError("RSTA uses fixed reference_temperature=1300 K")
+        if (
+            temperature_basis == "rsta"
+            and rsta_energy_feature == "per_atom"
+            and baseline_mode != "feature"
+        ):
+            raise ValueError(
+                "RSTA E-full requires baseline_mode='feature'; E_DPA is never hard-added"
+            )
+        self.rsta_energy_feature = rsta_energy_feature
+        self.rsta_use_remainder = bool(rsta_use_remainder)
+        self.rsta_pooling = rsta_pooling
         self.trainable = bool(trainable)
         self.default_fparam = default_fparam
         self.dim_case_embd = int(dim_case_embd)
@@ -339,6 +369,14 @@ class FreeEnergyFittingNet(Fitting):
             self.correction_state_dim -= 1
         if self.temperature_basis in ("continuous_polynomial", "continuous_tlog_polynomial"):
             self.correction_state_dim += 3
+
+        self.rsta_pool_dim = self._get_rsta_pool_dim()
+        self.rsta_feature_dim = self.rsta_pool_dim + (
+            1
+            if self.temperature_basis == "rsta"
+            and self.rsta_energy_feature == "per_atom"
+            else 0
+        )
 
         baseline_cfg = dict(baseline or {})
         for forbidden in ("numb_fparam", "numb_aparam"):
@@ -523,8 +561,89 @@ class FreeEnergyFittingNet(Fitting):
         self.phase_gauge_atom_network = self._build_phase_gauge_atom_network()
         self.phase_gauge_network = self._build_phase_gauge_network()
         self.phase_gauge_gate_network = self._build_phase_gauge_gate_network()
+        self.rsta_g_network = self._build_rsta_network(0)
+        self.rsta_s_network = self._build_rsta_network(1)
+        self.rsta_q_network = self._build_rsta_network(2, extra_dim=1)
 
         self._set_trainable()
+
+    def _get_rsta_pool_dim(self) -> int:
+        if self.rsta_pooling == "type_mean":
+            return self.ntypes * self.dim_descrpt
+        if self.rsta_pooling in ("mean_max", "mean_std"):
+            return 2 * self.dim_descrpt
+        if self.rsta_pooling == "mean_std_max":
+            return 3 * self.dim_descrpt
+        return self.dim_descrpt
+
+    def _build_rsta_network(
+        self, branch: int, extra_dim: int = 0
+    ) -> torch.nn.Module:
+        """Build one RSTA global MLP; identity keeps non-RSTA checkpoints small."""
+        if self.temperature_basis != "rsta":
+            return torch.nn.Identity()
+        input_dim = (
+            self.rsta_pool_dim if branch == 2 else self.rsta_feature_dim
+        ) + extra_dim
+        widths = list(self.neuron) + [1]
+        dims = [input_dim, *widths]
+        layers: list[torch.nn.Module] = []
+        seed = self.seed
+        branch_seed = (
+            seed + 101 * (branch + 1)
+            if isinstance(seed, int)
+            else seed[0] + 101 * (branch + 1)
+            if isinstance(seed, list) and seed
+            else None
+        )
+        def build() -> list[torch.nn.Module]:
+            result: list[torch.nn.Module] = []
+            for ii in range(len(dims) - 1):
+                result.append(
+                    torch.nn.Linear(
+                        dims[ii], dims[ii + 1], dtype=self.prec, device=env.DEVICE
+                    )
+                )
+                if ii < len(dims) - 2:
+                    result.append(_activation(self.activation_function))
+            return result
+        if branch_seed is None:
+            layers = build()
+        else:
+            with torch.random.fork_rng(devices=[]):
+                torch.manual_seed(branch_seed)
+                layers = build()
+        return torch.nn.Sequential(*layers).to(env.DEVICE)
+
+    def _pool_rsta_descriptor(self, descriptor: torch.Tensor, atype: torch.Tensor) -> torch.Tensor:
+        """Pool frozen atom descriptors for the phase-level RSTA branches."""
+        atom_type = atype.to(descriptor.device)
+        mask = (atom_type >= 0).to(descriptor.dtype)
+        count = torch.clamp(mask.sum(dim=1, keepdim=True), min=1.0)
+        mean = (descriptor * mask.unsqueeze(-1)).sum(dim=1) / count
+        if self.rsta_pooling == "mean":
+            return mean
+        if self.rsta_pooling == "type_mean":
+            pieces: list[torch.Tensor] = []
+            for type_idx in range(self.ntypes):
+                type_mask = (atom_type == type_idx).to(descriptor.dtype)
+                type_count = torch.clamp(type_mask.sum(dim=1, keepdim=True), min=1.0)
+                pieces.append((descriptor * type_mask.unsqueeze(-1)).sum(dim=1) / type_count)
+            return torch.cat(pieces, dim=-1)
+        centered = descriptor - mean.unsqueeze(1)
+        variance = (centered.square() * mask.unsqueeze(-1)).sum(dim=1) / count
+        std = torch.sqrt(torch.clamp(variance, min=1.0e-12))
+        if self.rsta_pooling == "mean_std":
+            return torch.cat([mean, std], dim=-1)
+        masked = torch.where(
+            mask.unsqueeze(-1) > 0.0,
+            descriptor,
+            torch.full_like(descriptor, -torch.inf),
+        )
+        maximum = torch.max(masked, dim=1).values
+        if self.rsta_pooling == "mean_max":
+            return torch.cat([mean, maximum], dim=-1)
+        return torch.cat([mean, std, maximum], dim=-1)
 
     def _build_fparam_network(self, seed: int | list[int] | None) -> torch.nn.Module:
         """State-vector encoder for the correction conditioning variables."""
@@ -639,7 +758,7 @@ class FreeEnergyFittingNet(Fitting):
         for param in self.baseline.parameters():
             param.requires_grad = not self.freeze_baseline
         for param in self.correction.parameters():
-            param.requires_grad = self.trainable
+            param.requires_grad = self.trainable and self.temperature_basis != "rsta"
         for param in self.knot_correction_1.parameters():
             param.requires_grad = self.trainable and self.temperature_basis == "piecewise_linear"
         for param in self.knot_correction_2.parameters():
@@ -669,7 +788,7 @@ class FreeEnergyFittingNet(Fitting):
                 "anchored_tlog_polynomial",
             )
         for param in self.fparam_network.parameters():
-            param.requires_grad = self.trainable
+            param.requires_grad = self.trainable and self.temperature_basis != "rsta"
         for param in self.phase_gauge_network.parameters():
             param.requires_grad = self.trainable and bool(self.phase_gauge_neuron)
         for param in self.phase_gauge_atom_network.parameters():
@@ -679,6 +798,83 @@ class FreeEnergyFittingNet(Fitting):
                 self.trainable
                 and self.phase_gauge_basis == "adaptive_concave_residual"
             )
+        for param in self.rsta_g_network.parameters():
+            param.requires_grad = self.trainable and self.temperature_basis == "rsta"
+        for param in self.rsta_s_network.parameters():
+            param.requires_grad = self.trainable and self.temperature_basis == "rsta"
+        for param in self.rsta_q_network.parameters():
+            param.requires_grad = (
+                self.trainable
+                and self.temperature_basis == "rsta"
+                and self.rsta_use_remainder
+            )
+
+    def _forward_rsta(
+        self,
+        baseline: torch.Tensor,
+        descriptor: torch.Tensor,
+        atype: torch.Tensor,
+        full_state: torch.Tensor,
+    ) -> dict[str, torch.Tensor]:
+        """Evaluate RSTA as reference value + slope + anchored q(T)."""
+        atom_type = atype.to(descriptor.device)
+        mask = (atom_type >= 0).to(descriptor.dtype)
+        atom_count = torch.clamp(mask.sum(dim=1), min=1.0)
+        pooled = self._pool_rsta_descriptor(descriptor.to(self.prec), atom_type)
+        if self.rsta_energy_feature == "per_atom":
+            e_dpa = (baseline[..., 0] * mask).sum(dim=1, keepdim=True) / atom_count.reshape(-1, 1)
+            branch_input = torch.cat([pooled, e_dpa.to(self.prec)], dim=-1)
+        else:
+            branch_input = pooled
+        g_r = self.rsta_g_network(branch_input)
+        s_r = self.rsta_s_network(branch_input)
+        x = full_state[:, :1].to(self.prec) / self.temperature_scale
+        x_r = torch.full_like(x, self.reference_temperature / self.temperature_scale)
+        if self.rsta_use_remainder:
+            # q is defined by subtracting the value and tangent of the same
+            # neural f(z,T) at Tr. The caller must keep grad enabled for RSTA
+            # inference because the reference tangent is part of the model.
+            grad_was_enabled = torch.is_grad_enabled()
+            torch.set_grad_enabled(True)
+            x_current = x.detach().clone().requires_grad_(True)
+            x_reference = x_r.detach().clone().requires_grad_(True)
+            q_current = self.rsta_q_network(
+                torch.cat([pooled, x_current], dim=-1)
+            )
+            q_reference = self.rsta_q_network(
+                torch.cat([pooled, x_reference], dim=-1)
+            )
+            dq_reference_opt = torch.autograd.grad(
+                [q_reference.sum()],
+                [x_reference],
+                create_graph=True,
+                retain_graph=True,
+            )[0]
+            assert dq_reference_opt is not None
+            dq_reference = dq_reference_opt
+            q = q_current - q_reference - (x - x_r) * dq_reference
+            torch.set_grad_enabled(grad_was_enabled)
+        else:
+            q = torch.zeros_like(g_r)
+        slope_contribution = -(x - x_r) * s_r
+        total = g_r + slope_contribution + q
+        correction = (
+            total.unsqueeze(1) / atom_count.reshape(-1, 1, 1)
+        ).expand(-1, descriptor.shape[1], -1)
+        return {
+            "fes_baseline": baseline,
+            "rsta_reference": (g_r.unsqueeze(1) / atom_count.reshape(-1, 1, 1)).expand(
+                -1, descriptor.shape[1], -1
+            ),
+            "rsta_slope": (
+                slope_contribution.unsqueeze(1) / atom_count.reshape(-1, 1, 1)
+            ).expand(-1, descriptor.shape[1], -1),
+            "rsta_remainder": (q.unsqueeze(1) / atom_count.reshape(-1, 1, 1)).expand(
+                -1, descriptor.shape[1], -1
+            ),
+            "fes_correction": correction,
+            self.var_name: correction,
+        }
 
     def forward(
         self,
@@ -705,6 +901,8 @@ class FreeEnergyFittingNet(Fitting):
         if fparam is None:
             raise ValueError("the FES head requires a state vector in fparam")
         full_state = fparam.reshape(descriptor.shape[0], self.state_dim).to(self.prec)
+        if self.temperature_basis == "rsta":
+            return self._forward_rsta(baseline, descriptor, atype, full_state)
         correction_fparam = full_state
         if self.temperature_basis in (
             "linear_zero_anchor",
@@ -1151,8 +1349,7 @@ class FreeEnergyFittingNet(Fitting):
         # Written out longhand rather than through a local helper: this runs
         # inside TorchScript (via fitting_output_def -> do_grad_r), which does
         # not support nested function definitions.
-        return FittingOutputDef(
-            [
+        outputs = [
                 OutputVariableDef(
                     self.var_name,
                     [self.dim_out],
@@ -1178,7 +1375,19 @@ class FreeEnergyFittingNet(Fitting):
                     intensive=False,
                 ),
             ]
-        )
+        if self.temperature_basis == "rsta":
+            for name in ("rsta_reference", "rsta_slope", "rsta_remainder"):
+                outputs.append(
+                    OutputVariableDef(
+                        name,
+                        [self.dim_out],
+                        reducible=True,
+                        r_differentiable=False,
+                        c_differentiable=False,
+                        intensive=False,
+                    )
+                )
+        return FittingOutputDef(outputs)
 
     # --- introspection -------------------------------------------------
 
@@ -1283,6 +1492,11 @@ class FreeEnergyFittingNet(Fitting):
         the statistics are taken over ``[T, P, v, c]`` rather than the two raw
         columns found in ``fparam.npy``.
         """
+        if self.temperature_basis == "rsta":
+            # RSTA branches are global Linear/MLP maps and q uses an explicit
+            # dimensionless temperature input; no legacy Invar fparam stats
+            # are required by the active output path.
+            return
         if self.temperature_basis in (
             "linear_zero_anchor",
             "affine",
@@ -1391,6 +1605,30 @@ class FreeEnergyFittingNet(Fitting):
             for layer in self.phase_gauge_gate_network.modules()
             if isinstance(layer, torch.nn.Linear)
         ]
+        rsta_g_layers = [
+            {
+                "matrix": to_numpy_array(layer.weight),
+                "bias": to_numpy_array(layer.bias),
+            }
+            for layer in self.rsta_g_network.modules()
+            if isinstance(layer, torch.nn.Linear)
+        ]
+        rsta_s_layers = [
+            {
+                "matrix": to_numpy_array(layer.weight),
+                "bias": to_numpy_array(layer.bias),
+            }
+            for layer in self.rsta_s_network.modules()
+            if isinstance(layer, torch.nn.Linear)
+        ]
+        rsta_q_layers = [
+            {
+                "matrix": to_numpy_array(layer.weight),
+                "bias": to_numpy_array(layer.bias),
+            }
+            for layer in self.rsta_q_network.modules()
+            if isinstance(layer, torch.nn.Linear)
+        ]
         return {
             "@class": "Fitting",
             "@version": 1,
@@ -1421,6 +1659,9 @@ class FreeEnergyFittingNet(Fitting):
             "baseline": self.baseline_cfg,
             "freeze_baseline": self.freeze_baseline,
             "baseline_mode": self.baseline_mode,
+            "rsta_energy_feature": self.rsta_energy_feature,
+            "rsta_use_remainder": self.rsta_use_remainder,
+            "rsta_pooling": self.rsta_pooling,
             "trainable": self.trainable,
             "default_fparam": self.default_fparam,
             "dim_case_embd": self.dim_case_embd,
@@ -1439,6 +1680,9 @@ class FreeEnergyFittingNet(Fitting):
                 "phase_gauge_network": phase_gauge_layers,
                 "phase_gauge_atom_network": phase_gauge_atom_layers,
                 "phase_gauge_gate_network": phase_gauge_gate_layers,
+                "rsta_g_network": rsta_g_layers,
+                "rsta_s_network": rsta_s_layers,
+                "rsta_q_network": rsta_q_layers,
             },
         }
 
@@ -1505,6 +1749,20 @@ class FreeEnergyFittingNet(Fitting):
             ):
                 layer.weight.data.copy_(to_torch_tensor(saved["matrix"]))
                 layer.bias.data.copy_(to_torch_tensor(saved["bias"]))
+        for network, key in (
+            (obj.rsta_g_network, "rsta_g_network"),
+            (obj.rsta_s_network, "rsta_s_network"),
+            (obj.rsta_q_network, "rsta_q_network"),
+        ):
+            if key in variables:
+                rsta_linears = [
+                    layer
+                    for layer in network.modules()
+                    if isinstance(layer, torch.nn.Linear)
+                ]
+                for layer, saved in zip(rsta_linears, variables[key], strict=True):
+                    layer.weight.data.copy_(to_torch_tensor(saved["matrix"]))
+                    layer.bias.data.copy_(to_torch_tensor(saved["bias"]))
         obj._set_trainable()
         return obj
 

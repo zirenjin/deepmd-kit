@@ -282,6 +282,71 @@ def test_anchored_basis_roundtrip_preserves_configuration(basis):
     assert restored.temperature_basis == basis
     assert restored.reference_temperature == 900.0
 
+
+@pytest.mark.parametrize(
+    ("energy_feature", "use_remainder"),
+    [("per_atom", True), ("none", True), ("per_atom", False)],
+)
+def test_rsta_variants_have_explicit_decomposition(energy_feature, use_remainder):
+    model = _make_model(
+        temperature_basis="rsta",
+        reference_temperature=1300.0,
+        baseline_mode="feature" if energy_feature == "per_atom" else "none",
+        rsta_energy_feature=energy_feature,
+        rsta_use_remainder=use_remainder,
+        rsta_pooling="mean_std_max",
+    )
+    fitting = model.get_fitting_net()
+    coord, atype, box, fparam = _batch(nframes=2)
+    out = model(coord, atype, box=box, fparam=fparam)
+    for name in ("rsta_reference", "rsta_slope", "rsta_remainder"):
+        assert name in out
+    assert torch.allclose(
+        out["free_energy"],
+        out["rsta_reference"] + out["rsta_slope"] + out["rsta_remainder"],
+        atol=1e-10,
+    )
+    expected = fitting.rsta_pool_dim + (energy_feature == "per_atom")
+    assert fitting.rsta_g_network[0].in_features == expected
+    if not use_remainder:
+        assert torch.count_nonzero(out["rsta_remainder"]) == 0
+
+
+def test_rsta_reference_remainder_is_anchored_at_1300k():
+    model = _make_model(
+        temperature_basis="rsta",
+        reference_temperature=1300.0,
+        baseline_mode="feature",
+        rsta_energy_feature="per_atom",
+        rsta_use_remainder=True,
+    )
+    coord, atype, box, _ = _batch(nframes=2)
+    at_1300 = _tensor([[1300.0, 1.0]] * 2, dtype=torch.float64)
+    at_1300_plus = _tensor([[1300.001, 1.0]] * 2, dtype=torch.float64)
+    reference = model(coord, atype, box=box, fparam=at_1300)["rsta_remainder"]
+    nearby = model(coord, atype, box=box, fparam=at_1300_plus)["rsta_remainder"]
+    assert torch.allclose(reference, torch.zeros_like(reference), atol=1e-10)
+    assert torch.max(torch.abs(nearby - reference)) < 1e-5
+
+
+def test_rsta_roundtrip_preserves_fixed_reference_and_variants():
+    model = _make_model(
+        temperature_basis="rsta",
+        reference_temperature=1300.0,
+        baseline_mode="feature",
+        rsta_energy_feature="per_atom",
+        rsta_use_remainder=True,
+    )
+    fitting = model.get_fitting_net()
+    data = fitting.serialize()
+    assert data["temperature_basis"] == "rsta"
+    assert data["reference_temperature"] == 1300.0
+    assert data["rsta_energy_feature"] == "per_atom"
+    restored = FreeEnergyFittingNet.deserialize(data)
+    assert restored.temperature_basis == "rsta"
+    assert restored.reference_temperature == 1300.0
+    assert restored.rsta_use_remainder
+
 # --- the two fparam widths -------------------------------------------
 
 

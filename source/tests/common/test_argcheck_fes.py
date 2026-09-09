@@ -113,6 +113,21 @@ def test_fes_accepts_continuous_and_anchored_bases():
         _check(fitting_fes(), _fitting(temperature_basis=basis))
 
 
+def test_fes_accepts_rsta_variants_and_fixed_reference():
+    for energy_feature, use_remainder in (("per_atom", True), ("none", True), ("per_atom", False)):
+        _check(
+            fitting_fes(),
+            _fitting(
+                temperature_basis="rsta",
+                reference_temperature=1300.0,
+                baseline_mode="feature" if energy_feature == "per_atom" else "none",
+                rsta_energy_feature=energy_feature,
+                rsta_use_remainder=use_remainder,
+                rsta_pooling="mean_std_max",
+            ),
+        )
+
+
 @pytest.mark.parametrize(
     "unsupported",
     [

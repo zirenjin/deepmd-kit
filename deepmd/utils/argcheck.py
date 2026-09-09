@@ -3007,7 +3007,9 @@ def fitting_fes() -> list[Argument]:
         "continuous_polynomial and continuous_tlog_polynomial expose continuous "
         "basis features to a shared scalar residual regressor; piecewise_linear "
         "uses fixed thermodynamic temperature knots; anchored_quadratic, anchored_cubic, anchored_polynomial, and "
-        "anchored_tlog_polynomial use a reference-anchored coefficient generator."
+        "anchored_tlog_polynomial use a reference-anchored coefficient generator; "
+        "rsta uses a fixed 1300 K reference value/slope plus an autograd-anchored "
+        "neural thermal remainder."
     )
     doc_fparam_neuron = (
         "Hidden sizes of the state-vector encoder, whose output is concatenated "
@@ -3208,6 +3210,37 @@ def fitting_fes() -> list[Argument]:
                 "`additive` adds it with coefficient one (Method B), `none` "
                 "removes it from the output, and `feature` provides its atomic "
                 "energy as a correction input feature."
+            ),
+        ),
+        Argument(
+            "rsta_energy_feature",
+            str,
+            optional=True,
+            default="per_atom",
+            doc=(
+                "RSTA energy feature mode: `per_atom` includes frozen DPA energy "
+                "as a feature (E-full), while `none` gives E-zonly. RSTA never "
+                "adds E_DPA with a fixed coefficient."
+            ),
+        ),
+        Argument(
+            "rsta_use_remainder",
+            bool,
+            optional=True,
+            default=True,
+            doc=(
+                "Whether RSTA includes the reference-anchored nonlinear q(T) "
+                "remainder. False is the E-linear-only diagnostic."
+            ),
+        ),
+        Argument(
+            "rsta_pooling",
+            str,
+            optional=True,
+            default="mean_std_max",
+            doc=(
+                "Invariant descriptor pooling for RSTA global branches: mean, "
+                "mean_max, mean_std, mean_std_max, or type_mean."
             ),
         ),
     ]
