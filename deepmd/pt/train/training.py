@@ -1167,7 +1167,10 @@ class Trainer:
         initial_lr = self.lr_schedule.value(self.start_step)
         if self.opt_type == "LKF":
             self.optimizer = LKFOptimizer(
-                self.wrapper.parameters(), 0.98, 0.99870, self.opt_param["kf_blocksize"]
+                (param for param in self.wrapper.parameters() if param.requires_grad),
+                0.98,
+                0.99870,
+                self.opt_param["kf_blocksize"],
             )
         else:
             # === Common path for gradient-based optimizers ===
@@ -1176,7 +1179,11 @@ class Trainer:
                 float(self.opt_param["adam_beta2"]),
             )
             weight_decay = float(self.opt_param["weight_decay"])
-            runtime_named_parameters = tuple(self.wrapper.named_parameters())
+            runtime_named_parameters = tuple(
+                (name, param)
+                for name, param in self.wrapper.named_parameters()
+                if param.requires_grad
+            )
 
             if self.opt_type in ("Adam", "AdamW"):
                 cls = torch.optim.Adam if self.opt_type == "Adam" else torch.optim.AdamW
@@ -1476,11 +1483,14 @@ class Trainer:
         """
         if self.zero_stage == 1:
             return ZeroRedundancyOptimizer(
-                self.wrapper.parameters(),
+                (param for param in self.wrapper.parameters() if param.requires_grad),
                 optimizer_class=optimizer_class,
                 **kwargs,
             )
-        return optimizer_class(self.wrapper.parameters(), **kwargs)
+        return optimizer_class(
+            (param for param in self.wrapper.parameters() if param.requires_grad),
+            **kwargs,
+        )
 
     def _get_inner_module(self) -> ModelWrapper:
         """Unwrap DDP if needed. FSDP2 is in-place so no unwrapping required."""
