@@ -3198,6 +3198,18 @@ def fitting_fes() -> list[Argument]:
             default=True,
             doc=doc_freeze_baseline,
         ),
+        Argument(
+            "baseline_mode",
+            str,
+            optional=True,
+            default="additive",
+            doc=(
+                "How the frozen PES baseline participates in the FES output: "
+                "`additive` adds it with coefficient one (Method B), `none` "
+                "removes it from the output, and `feature` provides its atomic "
+                "energy as a correction input feature."
+            ),
+        ),
     ]
     return args
 

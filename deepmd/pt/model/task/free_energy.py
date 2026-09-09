@@ -121,6 +121,12 @@ class FreeEnergyFittingNet(Fitting):
     freeze_baseline : bool
         Whether to freeze the baseline weights.  True keeps ``E_DPA`` fixed,
         which is the intended two-stage workflow.
+    baseline_mode : str
+        How the frozen PES baseline participates in the prediction: ``additive``
+        returns baseline plus correction (the original Method B), ``none``
+        removes the baseline from the final output, and ``feature`` appends the
+        atomic baseline energy to the correction input without adding it with a
+        fixed coefficient.
     trainable : bool
         Whether the correction net and the state encoder are trainable.
     default_fparam : list[float], optional
@@ -165,6 +171,7 @@ class FreeEnergyFittingNet(Fitting):
         precision: str = DEFAULT_PRECISION,
         baseline: dict[str, Any] | None = None,
         freeze_baseline: bool = True,
+        baseline_mode: str = "additive",
         trainable: bool = True,
         default_fparam: list[float] | None = None,
         dim_case_embd: int = 0,
@@ -279,6 +286,11 @@ class FreeEnergyFittingNet(Fitting):
         self.precision = precision
         self.prec = PRECISION_DICT[self.precision]
         self.freeze_baseline = bool(freeze_baseline)
+        if baseline_mode not in ("additive", "none", "feature"):
+            raise ValueError(
+                "baseline_mode must be 'additive', 'none', or 'feature'"
+            )
+        self.baseline_mode = baseline_mode
         self.trainable = bool(trainable)
         self.default_fparam = default_fparam
         self.dim_case_embd = int(dim_case_embd)
@@ -355,7 +367,9 @@ class FreeEnergyFittingNet(Fitting):
         self.correction = InvarFitting(
             var_name=CORRECTION_NAME,
             ntypes=ntypes,
-            dim_descrpt=dim_descrpt + fparam_out_dim,
+            dim_descrpt=dim_descrpt
+            + fparam_out_dim
+            + (1 if self.baseline_mode == "feature" else 0),
             dim_out=1,
             neuron=self.neuron,
             resnet_dt=resnet_dt,
@@ -747,7 +761,11 @@ class FreeEnergyFittingNet(Fitting):
                 state = (state - avg) * inv_std
             encoded = self.fparam_network(state)
             encoded = encoded.unsqueeze(1).expand(-1, descriptor.shape[1], -1)
-            corr_descriptor = torch.cat([descriptor.to(self.prec), encoded], dim=-1)
+            corr_descriptor = torch.cat([corr_descriptor.to(self.prec), encoded], dim=-1)
+        if self.baseline_mode == "feature":
+            corr_descriptor = torch.cat(
+                [corr_descriptor.to(self.prec), baseline.to(self.prec)], dim=-1
+            )
 
         # Literal keys, not the module constants: TorchScript cannot close over
         # module-level strings.  ``test_fes_output_names`` pins them to
@@ -1119,7 +1137,11 @@ class FreeEnergyFittingNet(Fitting):
         return {
             "fes_baseline": baseline,
             "fes_correction": correction,
-            self.var_name: baseline + correction,
+            self.var_name: (
+                baseline + correction
+                if self.baseline_mode == "additive"
+                else correction
+            ),
         }
 
     def output_def(self) -> FittingOutputDef:
@@ -1398,6 +1420,7 @@ class FreeEnergyFittingNet(Fitting):
             "precision": self.precision,
             "baseline": self.baseline_cfg,
             "freeze_baseline": self.freeze_baseline,
+            "baseline_mode": self.baseline_mode,
             "trainable": self.trainable,
             "default_fparam": self.default_fparam,
             "dim_case_embd": self.dim_case_embd,
