@@ -3169,6 +3169,37 @@ def fitting_fes() -> list[Argument]:
             ),
         ),
         Argument(
+            "phase_gauge_centering",
+            bool,
+            optional=True,
+            default=False,
+            doc=(
+                "Hard-center phase-gauge coefficients over the configured "
+                "synchronized seen-phase set and absorb the mean into the "
+                "shared correction."
+            ),
+        ),
+        Argument(
+            "phase_gauge_phase_count",
+            int,
+            optional=True,
+            default=0,
+            doc=(
+                "Number of equal-sized phase-major blocks used by hard "
+                "phase-gauge centering."
+            ),
+        ),
+        Argument(
+            "phase_gauge_phase_names",
+            list[str],
+            optional=True,
+            default=[],
+            doc=(
+                "Optional names of the seen phases used for centering; "
+                "stored for LOPO auditability."
+            ),
+        ),
+        Argument(
             "center_local_correction",
             bool,
             optional=True,

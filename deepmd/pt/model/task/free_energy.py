@@ -170,6 +170,10 @@ class FreeEnergyFittingNet(Fitting):
         phase_gauge_pooling: str = "mean",
         phase_gauge_basis: str = "piecewise_linear",
         phase_gauge_only: bool = False,
+        phase_gauge_centering: bool = False,
+        phase_gauge_phase_count: int = 0,
+        phase_gauge_phase_names: list[str] | None = None,
+        phase_gauge_component_outputs: bool | None = None,
         center_local_correction: bool = False,
         neuron: list[int] | None = None,
         fparam_neuron: list[int] | None = None,
@@ -278,6 +282,14 @@ class FreeEnergyFittingNet(Fitting):
             )
         self.phase_gauge_basis = phase_gauge_basis
         self.phase_gauge_only = bool(phase_gauge_only)
+        self.phase_gauge_centering = bool(phase_gauge_centering)
+        self.phase_gauge_phase_count = int(phase_gauge_phase_count)
+        self.phase_gauge_phase_names = list(phase_gauge_phase_names or [])
+        self.phase_gauge_component_outputs = bool(
+            self.phase_gauge_centering
+            if phase_gauge_component_outputs is None
+            else phase_gauge_component_outputs
+        )
         if self.phase_gauge_only and not self.phase_gauge_neuron:
             raise ValueError("phase_gauge_only requires phase_gauge_neuron")
         if self.phase_gauge_only and self.temperature_basis not in (
@@ -285,6 +297,20 @@ class FreeEnergyFittingNet(Fitting):
             "anchored_quadratic", "anchored_polynomial", "anchored_cubic", "anchored_tlog_polynomial",
         ):
             raise ValueError("phase_gauge_only requires a compatible temperature basis")
+        if self.phase_gauge_centering:
+            if not self.phase_gauge_neuron:
+                raise ValueError(
+                    "phase_gauge_centering requires phase_gauge_neuron"
+                )
+            if self.phase_gauge_phase_count < 2:
+                raise ValueError(
+                    "phase_gauge_phase_count must be at least two when "
+                    "phase_gauge_centering is enabled"
+                )
+            if self.phase_gauge_phase_names and len(self.phase_gauge_phase_names) != self.phase_gauge_phase_count:
+                raise ValueError(
+                    "phase_gauge_phase_names must match phase_gauge_phase_count"
+                )
         self.center_local_correction = bool(center_local_correction)
         if self.center_local_correction and not self.phase_gauge_neuron:
             raise ValueError(
@@ -645,6 +671,48 @@ class FreeEnergyFittingNet(Fitting):
             return torch.cat([mean, maximum], dim=-1)
         return torch.cat([mean, std, maximum], dim=-1)
 
+    def _center_phase_set(
+        self, raw: torch.Tensor
+    ) -> tuple[torch.Tensor, torch.Tensor]:
+        """Return centered phase-major values and the absorbed mean.
+
+        The phase count is configuration, never inferred from whichever
+        phases happen to occur in a batch. Synchronized loaders must emit one
+        equal-sized block for every configured seen phase.
+        """
+        if not self.phase_gauge_centering:
+            return raw, torch.zeros_like(raw)
+        phase_count = self.phase_gauge_phase_count
+        if raw.shape[0] % phase_count != 0:
+            raise ValueError(
+                "hard phase-gauge centering requires a phase-major batch with "
+                f"{phase_count} equal-sized phase blocks; got {raw.shape[0]} "
+                "samples"
+            )
+        phase_batch = raw.shape[0] // phase_count
+        phase_values = raw.reshape(phase_count, phase_batch, raw.shape[-1])
+        mean = torch.mean(phase_values, dim=0, keepdim=True)
+        centered = phase_values - mean
+        return (
+            centered.reshape_as(raw),
+            mean.expand(phase_count, -1, -1).reshape_as(raw),
+        )
+
+    @torch.jit.export
+    def set_phase_gauge_centering(self, enabled: bool) -> None:
+        """Enable centering for synchronized seen-phase batches.
+
+        A LOPO evaluator should disable this before querying a held-out phase
+        by itself. That path performs no target-phase mean calculation; the
+        frozen model then returns the same raw prediction used during training.
+        """
+        if enabled and self.phase_gauge_phase_count < 2:
+            raise ValueError(
+                "phase_gauge_phase_count must be at least two when "
+                "phase_gauge_centering is enabled"
+            )
+        self.phase_gauge_centering = enabled
+
     def _build_fparam_network(self, seed: int | list[int] | None) -> torch.nn.Module:
         """State-vector encoder for the correction conditioning variables."""
         if not self.fparam_neuron:
@@ -982,6 +1050,8 @@ class FreeEnergyFittingNet(Fitting):
         phase_gauge = torch.zeros(
             (descriptor.shape[0], 4), dtype=correction.dtype, device=descriptor.device
         )
+        phase_gauge_raw = phase_gauge
+        phase_gauge_mean = torch.zeros_like(phase_gauge)
         if self.has_phase_gauge:
             atom_mask = (atype >= 0).to(self.prec)
             atom_count = torch.clamp(torch.sum(atom_mask, dim=1), min=1.0)
@@ -1054,6 +1124,7 @@ class FreeEnergyFittingNet(Fitting):
             phase_gauge = self.phase_gauge_network(
                 gauge_input
             )
+            phase_gauge_raw = phase_gauge
             if self.phase_gauge_basis in ("concave", "concave_residual"):
                 # The global phase correction is concave in temperature, as
                 # required by d2G/dT2 = -Cp/T <= 0 for positive heat capacity.
@@ -1145,6 +1216,16 @@ class FreeEnergyFittingNet(Fitting):
                 continuous_phase_gauge = intercept - entropy * x
             elif self.temperature_basis == "concave_entropy":
                 continuous_phase_gauge = intercept - entropy * x - self.curvature_scale * curvature * x.square()
+        # Hard gauge fixing is an exact reparameterization. The centered
+        # phase residual is used below, while the phase-set mean is absorbed
+        # into the shared correction so the final prediction is unchanged.
+        if self.phase_gauge_component_outputs:
+            phase_gauge, phase_gauge_mean = self._center_phase_set(phase_gauge)
+            continuous_phase_gauge, continuous_phase_gauge_mean = self._center_phase_set(
+                continuous_phase_gauge
+            )
+        else:
+            continuous_phase_gauge_mean = torch.zeros_like(continuous_phase_gauge)
         if self.temperature_basis == "piecewise_linear":
             if self.phase_gauge_only:
                 knot_1 = torch.zeros_like(correction)
@@ -1169,10 +1250,18 @@ class FreeEnergyFittingNet(Fitting):
                 atom_count = torch.clamp(
                     torch.sum((atype >= 0).to(correction.dtype), dim=1), min=1.0
                 ).reshape(-1, 1, 1)
-                correction = correction + phase_gauge[:, 0:1].unsqueeze(1) / atom_count
-                knot_1 = knot_1 + phase_gauge[:, 1:2].unsqueeze(1) / atom_count
-                knot_2 = knot_2 + phase_gauge[:, 2:3].unsqueeze(1) / atom_count
-                knot_3 = knot_3 + phase_gauge[:, 3:4].unsqueeze(1) / atom_count
+                correction = correction + (
+                    phase_gauge[:, 0:1] + phase_gauge_mean[:, 0:1]
+                ).unsqueeze(1) / atom_count
+                knot_1 = knot_1 + (
+                    phase_gauge[:, 1:2] + phase_gauge_mean[:, 1:2]
+                ).unsqueeze(1) / atom_count
+                knot_2 = knot_2 + (
+                    phase_gauge[:, 2:3] + phase_gauge_mean[:, 2:3]
+                ).unsqueeze(1) / atom_count
+                knot_3 = knot_3 + (
+                    phase_gauge[:, 3:4] + phase_gauge_mean[:, 3:4]
+                ).unsqueeze(1) / atom_count
             t = full_state[:, :1]
             k0 = self.temperature_knots[0]
             k1 = self.temperature_knots[1]
@@ -1329,9 +1418,30 @@ class FreeEnergyFittingNet(Fitting):
             atom_count = torch.clamp(
                 torch.sum((atype >= 0).to(correction.dtype), dim=1), min=1.0
             ).reshape(-1, 1, 1)
+            correction = correction + continuous_phase_gauge_mean.unsqueeze(1) / atom_count
             correction = correction + continuous_phase_gauge.unsqueeze(1) / atom_count
 
-        return {
+        phase_outputs: dict[str, torch.Tensor] = {}
+        if self.phase_gauge_component_outputs:
+            atom_count = torch.clamp(
+                torch.sum((atype >= 0).to(correction.dtype), dim=1), min=1.0
+            ).reshape(-1, 1, 1)
+            phase_outputs = {
+                "phase_correction_intercept_raw": (
+                    phase_gauge_raw[:, 0:1].unsqueeze(1) / atom_count
+                ).expand(-1, descriptor.shape[1], -1),
+                "phase_correction_slope_raw": (
+                    phase_gauge_raw[:, 1:2].unsqueeze(1) / atom_count
+                ).expand(-1, descriptor.shape[1], -1),
+                "phase_correction_intercept": (
+                    phase_gauge[:, 0:1].unsqueeze(1) / atom_count
+                ).expand(-1, descriptor.shape[1], -1),
+                "phase_correction_slope": (
+                    phase_gauge[:, 1:2].unsqueeze(1) / atom_count
+                ).expand(-1, descriptor.shape[1], -1),
+            }
+
+        output = {
             "fes_baseline": baseline,
             "fes_correction": correction,
             self.var_name: (
@@ -1340,6 +1450,9 @@ class FreeEnergyFittingNet(Fitting):
                 else correction
             ),
         }
+        for name, value in phase_outputs.items():
+            output[name] = value
+        return output
 
     def output_def(self) -> FittingOutputDef:
         # free_energy is the trained/served output; the other two are kept as
@@ -1376,6 +1489,23 @@ class FreeEnergyFittingNet(Fitting):
             ]
         if self.temperature_basis == "rsta":
             for name in ("rsta_reference", "rsta_slope", "rsta_remainder"):
+                outputs.append(
+                    OutputVariableDef(
+                        name,
+                        [self.dim_out],
+                        reducible=True,
+                        r_differentiable=False,
+                        c_differentiable=False,
+                        intensive=False,
+                    )
+                )
+        if self.phase_gauge_component_outputs:
+            for name in (
+                "phase_correction_intercept_raw",
+                "phase_correction_slope_raw",
+                "phase_correction_intercept",
+                "phase_correction_slope",
+            ):
                 outputs.append(
                     OutputVariableDef(
                         name,
@@ -1649,6 +1779,10 @@ class FreeEnergyFittingNet(Fitting):
             "phase_gauge_basis": self.phase_gauge_basis,
             "concavity_mix": self.concavity_mix,
             "phase_gauge_only": self.phase_gauge_only,
+            "phase_gauge_centering": self.phase_gauge_centering,
+            "phase_gauge_phase_count": self.phase_gauge_phase_count,
+            "phase_gauge_phase_names": self.phase_gauge_phase_names,
+            "phase_gauge_component_outputs": self.phase_gauge_component_outputs,
             "center_local_correction": self.center_local_correction,
             "neuron": self.neuron,
             "fparam_neuron": self.fparam_neuron,

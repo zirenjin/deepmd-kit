@@ -128,6 +128,19 @@ def test_fes_accepts_rsta_variants_and_fixed_reference():
         )
 
 
+def test_fes_accepts_hard_phase_gauge_centering_options():
+    _check(
+        fitting_fes(),
+        _fitting(
+            temperature_basis="affine",
+            phase_gauge_neuron=[16],
+            phase_gauge_centering=True,
+            phase_gauge_phase_count=3,
+            phase_gauge_phase_names=["phase_a", "phase_b", "phase_c"],
+        ),
+    )
+
+
 @pytest.mark.parametrize(
     "unsupported",
     [

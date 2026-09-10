@@ -347,6 +347,92 @@ def test_rsta_roundtrip_preserves_fixed_reference_and_variants():
     assert restored.reference_temperature == 1300.0
     assert restored.rsta_use_remainder
 
+
+def test_phase_gauge_centering_is_zero_mean_and_translation_invariant():
+    model = _make_model(
+        temperature_basis="affine",
+        phase_gauge_neuron=[8],
+        phase_gauge_centering=True,
+        phase_gauge_phase_count=3,
+        phase_gauge_phase_names=["phase_a", "phase_b", "phase_c"],
+    )
+    fitting = model.get_fitting_net()
+    raw = _tensor(
+        [[1.0, -2.0, 0.2, 0.0], [3.0, 4.0, 0.4, 0.0],
+         [-2.0, 1.0, 0.1, 0.0], [2.0, 0.0, 0.3, 0.0],
+         [4.0, 5.0, 0.5, 0.0], [-1.0, 2.0, 0.2, 0.0]],
+        dtype=torch.float64,
+    )
+    centered, mean = fitting._center_phase_set(raw)
+    phase_centered = centered.reshape(3, 2, 4)
+    np.testing.assert_allclose(_numpy(phase_centered.mean(dim=0)), 0.0, atol=1e-12)
+    np.testing.assert_allclose(_numpy(mean.reshape(3, 2, 4)[0]), _numpy(mean.reshape(3, 2, 4)[1]))
+    shifted = raw + _tensor([[7.0, -3.0, 11.0, 2.0]] * raw.shape[0], dtype=torch.float64)
+    shifted_centered, _ = fitting._center_phase_set(shifted)
+    np.testing.assert_allclose(_numpy(centered), _numpy(shifted_centered), atol=1e-12)
+
+
+def test_phase_gauge_centering_preserves_forward_and_has_gradients():
+    plain = _make_model(
+        temperature_basis="affine", phase_gauge_neuron=[8], seed=1
+    )
+    centered = _make_model(
+        temperature_basis="affine",
+        phase_gauge_neuron=[8],
+        phase_gauge_centering=True,
+        phase_gauge_phase_count=2,
+        phase_gauge_phase_names=["phase_a", "phase_b"],
+        seed=1,
+    )
+    coord, atype, box, fparam = _batch(nframes=4)
+    plain_out = plain(coord, atype, box=box, fparam=fparam)["free_energy"]
+    centered_out = centered(coord, atype, box=box, fparam=fparam)
+    np.testing.assert_allclose(
+        _numpy(plain_out), _numpy(centered_out["free_energy"]), atol=1e-10
+    )
+    phase_fit = centered.get_fitting_net()
+    assert phase_fit.phase_gauge_centering
+    assert phase_fit.phase_gauge_phase_count == 2
+    centered_out["free_energy"].sum().backward()
+    base_grad = [p.grad for p in phase_fit.correction.parameters() if p.requires_grad]
+    gauge_grad = [p.grad for p in phase_fit.phase_gauge_network.parameters() if p.requires_grad]
+    assert any(g is not None and torch.count_nonzero(g) > 0 for g in base_grad)
+    assert any(g is not None and torch.count_nonzero(g) > 0 for g in gauge_grad)
+
+
+def test_phase_gauge_centering_can_be_disabled_for_target_phase_inference():
+    model = _make_model(
+        temperature_basis="affine",
+        phase_gauge_neuron=[8],
+        phase_gauge_centering=True,
+        phase_gauge_phase_count=2,
+        phase_gauge_phase_names=["seen_a", "seen_b"],
+        seed=1,
+    )
+    coord, atype, box, fparam = _batch(nframes=1)
+    fitting = model.get_fitting_net()
+    fitting.set_phase_gauge_centering(False)
+    output = model(coord, atype, box=box, fparam=fparam)
+    assert output["free_energy"].shape == (1, 1)
+    assert all(name in output for name in (
+        "phase_correction_intercept_raw",
+        "phase_correction_slope_raw",
+        "phase_correction_intercept",
+        "phase_correction_slope",
+    ))
+
+
+def test_phase_gauge_centering_rejects_incomplete_synchronized_batch():
+    model = _make_model(
+        temperature_basis="affine",
+        phase_gauge_neuron=[8],
+        phase_gauge_centering=True,
+        phase_gauge_phase_count=3,
+    )
+    raw = _tensor([[1.0, 2.0, 3.0, 4.0]] * 4, dtype=torch.float64)
+    with pytest.raises(ValueError, match="phase-major batch"):
+        model.get_fitting_net()._center_phase_set(raw)
+
 # --- the two fparam widths -------------------------------------------
 
 

@@ -70,6 +70,14 @@ class FreeEnergyModel(DPModelCommon, DPFreeEnergyModel_):
         for name in ("rsta_reference", "rsta_slope", "rsta_remainder"):
             if name + "_redu" in out_def_data:
                 output_def[name] = out_def_data[name + "_redu"]
+        for name in (
+            "phase_correction_intercept_raw",
+            "phase_correction_slope_raw",
+            "phase_correction_intercept",
+            "phase_correction_slope",
+        ):
+            if name + "_redu" in out_def_data:
+                output_def[name] = out_def_data[name + "_redu"]
         if "mask" in out_def_data:
             output_def["mask"] = out_def_data["mask"]
         return output_def
@@ -112,6 +120,14 @@ class FreeEnergyModel(DPModelCommon, DPFreeEnergyModel_):
             "fes_correction": model_ret["fes_correction_redu"],
         }
         for name in ("rsta_reference", "rsta_slope", "rsta_remainder"):
+            if name + "_redu" in model_ret:
+                model_predict[name] = model_ret[name + "_redu"]
+        for name in (
+            "phase_correction_intercept_raw",
+            "phase_correction_slope_raw",
+            "phase_correction_intercept",
+            "phase_correction_slope",
+        ):
             if name + "_redu" in model_ret:
                 model_predict[name] = model_ret[name + "_redu"]
         if "mask" in model_ret:
